@@ -2,9 +2,9 @@ import torch
 from torch import nn
 import timm
 
-from hybridnets.model import BiFPN, Regressor, Classifier, BiFPNDecoder
+from elinets.model import BiFPN, Regressor, Classifier, BiFPNDecoder
 from utils.utils import Anchors
-from hybridnets.model import SegmentationHead
+from elinets.model import SegmentationHead
 
 from encoders import get_encoder
 from utils.constants import *

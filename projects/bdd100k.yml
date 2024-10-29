@@ -8,11 +8,11 @@ seg_list: ['road', 'line']
 seg_multilabel: false  # a pixel can belong to multiple labels (i.e. lane line + underlying road)
 
 dataset:
-  dataroot: ../../datasets/bdd100k
-  labelroot: ../../datasets/data2/zwt/bdd/bdd100k/labels/100k
+  dataroot: /home/a/yewon_ws/src/DLENets/datasets/bdd100k/images/100k/
+  labelroot: /home/a/yewon_ws/src/DLENets/datasets/bdd100k/labels/drivable/polygons/
   segroot:
-  - ../../datasets/bdd_seg_gt
-  - ../../datasets/bdd_lane_gt
+  - /home/a/yewon_ws/src/DLENets/datasets/bdd_seg_gt
+  - /home/a/yewon_ws/src/DLENets/datasets/bdd_lane_gt/
   test_set: val
   train_set: train
   org_img_size:
@@ -36,5 +36,4 @@ model:
   image_size:
   - 640
   - 384
-need_autoanchor: false
 pin_memory: true

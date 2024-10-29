@@ -8,11 +8,10 @@ from utils import smp_metrics
 from utils.utils import ConfusionMatrix, postprocess, scale_coords, process_batch, ap_per_class, fitness, \
     save_checkpoint, DataLoaderX, BBoxTransform, ClipBoxes, boolean_string, Params
 from backbone import HybridNetsBackbone
-from hybridnets.dataset import BddDataset
-from hybridnets.custom_dataset import CustomDataset
+from elinets.dataset import BddDataset
 from torchvision import transforms
 import torch.nn.functional as F
-from hybridnets.model import ModelWithLoss
+from elinets.model import ModelWithLoss
 from utils.constants import *
 
 
@@ -35,7 +34,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
     stats, ap, ap_class = [], [], []
     iou_thresholds = torch.linspace(0.5, 0.95, 10).cuda()  # iou vector for mAP@0.5:0.95
     num_thresholds = iou_thresholds.numel()
-    names = {i: v for i, v in enumerate(params.obj_list)}
+    names = {i: v for i, v in enumerate(params.label_list)}
     nc = len(names)
     ncs = 1 if seg_mode == BINARY_MODE else len(params.seg_list) + 1
     seen = 0
@@ -54,7 +53,8 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
     val_loader = tqdm(val_generator, ascii=True)
     for iter, data in enumerate(val_loader):
         imgs = data['img']
-        annot = data['annot']
+        total_lane = data['totalLane']
+        ego_lane = data['egoLane']
         seg_annot = data['segmentation']
         filenames = data['filenames']
         shapes = data['shapes']
@@ -64,16 +64,16 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
             annot = annot.cuda()
             seg_annot = seg_annot.cuda()
 
-        cls_loss, reg_loss, seg_loss, regression, classification, anchors, segmentation = model(imgs, annot,
-                                                                                                seg_annot,
-                                                                                                obj_list=params.obj_list)
+        cls_loss, reg_loss, seg_loss, regression, classification, segmentation = model(imgs, ego_lane,
+                                                                                        seg_annot,
+                                                                                        label_list=params.label_list)
         cls_loss = cls_loss.mean()
         reg_loss = reg_loss.mean()
         seg_loss = seg_loss.mean()
 
         if opt.cal_map:
             out = postprocess(imgs.detach(),
-                              torch.stack([anchors[0]] * imgs.shape[0], 0).detach(), regression.detach(),
+                              torch.stack(imgs.shape[0], 0).detach(), regression.detach(),
                               classification.detach(),
                               regressBoxes, clipBoxes,
                               opt.conf_thres, opt.iou_thres)  # 0.5, 0.3
@@ -295,7 +295,7 @@ if __name__ == "__main__":
 
     compound_coef = args.compound_coef
     project_name = args.project
-    weights_path = f'weights/hybridnets-d{compound_coef}.pth' if args.weights is None else args.weights
+    weights_path = f'weights/elinets-d{compound_coef}.pth' if args.weights is None else args.weights
 
     params = Params(f'projects/{project_name}.yml')
     obj_list = params.obj_list
@@ -323,7 +323,7 @@ if __name__ == "__main__":
         collate_fn=BddDataset.collate_fn
     )
 
-    model = HybridNetsBackbone(compound_coef=compound_coef, num_classes=len(params.obj_list),
+    model = HybridNetsBackbone(compound_coef=compound_coef, num_classes=len(params.label_list),
                                ratios=eval(params.anchors_ratios), scales=eval(params.anchors_scales),
                                seg_classes=len(params.seg_list), backbone_name=args.backbone,
                                seg_mode=seg_mode)
@@ -335,7 +335,12 @@ if __name__ == "__main__":
     model = ModelWithLoss(model, debug=False)
     model.requires_grad_(False)
 
-    if args.num_gpus > 0:
-        model.cuda()
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+
+    if use_cuda:
+        model = model.to(device)
+    else :
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
     val(model, val_generator, params, args, seg_mode, is_training=False)

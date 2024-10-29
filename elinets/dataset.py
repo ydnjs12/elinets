@@ -78,11 +78,10 @@ class BddDataset(Dataset):
             gt = {}
             data = label['info'][0]
             if data['egoLane'] != "" and (int(data['totalLane']) if data['totalLane'] != "" else 10) <= len(self.label_list):
-                gt['totalLane'] = data['totalLane']
-                gt['egoLane'] = data['egoLane']
                 rec = {
                     'image': image_path,
-                    'label': gt,
+                    'totalLane': int(data['totalLane']),
+                    'egoLane': int(data['egoLane']),
                 }
             else:
                 continue
@@ -114,7 +113,8 @@ class BddDataset(Dataset):
         upload image corresponding index and preprocess
         '''
         data = self.db[index]
-        label = data["label"]
+        total_lane = data["totalLane"]
+        ego_lane = data["egoLane"]
         img = cv2.imread(str(data["image"]), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
@@ -137,7 +137,7 @@ class BddDataset(Dataset):
         for seg_class in seg_label:
             _, seg_label[seg_class] = cv2.threshold(seg_label[seg_class], 0, 255, cv2.THRESH_BINARY)
     
-        return img, label, seg_label, (h0, w0), (h,w), None
+        return img, total_lane, ego_lane, seg_label, (h0, w0), (h,w), None
 
     def __getitem__(self, idx):
         """
@@ -145,13 +145,14 @@ class BddDataset(Dataset):
         letterbox() : image resizing,
         Segmentation mode : segmentation label processing
         """
-        img, label, seg_label, (h0, w0), (h, w), path = self.load_image(idx)
+        img, total_lane, ego_lane, seg_label, (h0, w0), (h, w), path = self.load_image(idx)
 
         (img, seg_label), ratio, pad = letterbox((img, seg_label), (self.inputsize[1], self.inputsize[0]), auto=False,
                                                              scaleup=self.is_train)
         shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling  
-        label_app = np.array([label])
-        
+        total_lane = np.array([total_lane])
+        ego_lane = np.array([ego_lane])
+
         img = np.ascontiguousarray(img)
         
         if self.seg_mode == BINARY_MODE:
@@ -198,18 +199,18 @@ class BddDataset(Dataset):
 
         img = self.transform(img)
 
-        return img, path, shapes, torch.from_numpy(label_app), segmentation.long()
+        return img, path, shapes, torch.from_numpy(total_lane), torch.from_numpy(ego_lane), segmentation.long()
 
     @staticmethod
     def collate_fn(batch):
-        img, paths, shapes, label_app, segmentation = zip(*batch)
+        img, paths, shapes, total_lane, ego_lane, segmentation = zip(*batch)
 
-        total_lane = torch.tensor([label['totalLane'] for label in label_app], dtype=torch.float32).unsqueeze(1)  # Shape: (batch_size, 1)
-        ego_lane = torch.tensor([label['egoLane'] for label in label_app],dtype=torch.float32).unsqueeze(1)  # Shape: (batch_size, 1)
+        # total_lane = torch.tensor([label['totalLane'] for label in label_app], dtype=torch.float32).unsqueeze(1)  # Shape: (batch_size, 1)
+        # ego_lane = torch.tensor([label['egoLane'] for label in label_app],dtype=torch.float32).unsqueeze(1)  # Shape: (batch_size, 1)
 
         return {'img': torch.stack(img, 0), 
-                'total_lane': total_lane, 
-                'ego_lane': ego_lane, 
+                'totalLane': torch.tensor(total_lane), 
+                'egoLane': torch.tensor(ego_lane), 
                 'segmentation': torch.stack(segmentation, 0),
                 'filenames': None, 
                 'shapes': shapes

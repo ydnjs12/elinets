@@ -15,11 +15,8 @@ from backbone import HybridNetsBackbone
 from utils.utils import get_last_weights, init_weights, boolean_string, \
     save_checkpoint, DataLoaderX, Params
 from elinets.dataset import BddDataset
-from elinets.autoanchor import run_anchor
 from elinets.model import ModelWithLoss
 from utils.constants import *
-from collections import OrderedDict
-from torchinfo import summary
 
 
 def get_args():
@@ -42,7 +39,6 @@ def get_args():
     parser.add_argument('--es_patience', type=int, default=0,
                         help='Early stopping\'s parameter: number of epochs with no improvement after which '
                              'training will be stopped. Set to 0 to disable this technique')
-    parser.add_argument('--data_path', type=str, default='datasets/', help='The root folder of dataset')
     parser.add_argument('-w', '--load_weights', type=str, default=None,
                         help='Whether to load weights from a checkpoint, set None to initialize,'
                              'set \'last\' to load last checkpoint')
@@ -56,8 +52,6 @@ def get_args():
                         help='Whether to print results per class when valing')
     parser.add_argument('--plots', type=boolean_string, default=True,
                         help='Whether to plot confusion matrix when valing')
-    parser.add_argument('--num_gpus', type=int, default=1,
-                        help='Number of GPUs to be used (0 to use CPU)')
     parser.add_argument('--conf_thres', type=float, default=0.001,
                         help='Confidence threshold in NMS')
     parser.add_argument('--iou_thres', type=float, default=0.6,
@@ -73,91 +67,56 @@ def train(opt):
     print("\nCUDNN VERSION: {}\n".format(torch.backends.cudnn.version()))
     params = Params(f'projects/{opt.project}.yml')
 
-    if opt.num_gpus == 0:
-        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
 
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(42)
-    else:
-        torch.manual_seed(42)
+    # if torch.cuda.is_available():
+    #     torch.cuda.manual_seed(42)
+    # else:
+    #     torch.manual_seed(42)
 
-    saved_path = f'checkpoints/{opt.project}/'
-    log_path = f'checkpoints/{opt.project}/tensorboard/'
-    os.makedirs(log_path, exist_ok=True)
-    os.makedirs(saved_path, exist_ok=True)
-
+    # ====== Model Initialization ======
     seg_mode = MULTILABEL_MODE if params.seg_multilabel else MULTICLASS_MODE if len(params.seg_list) > 1 else BINARY_MODE
 
-    train_dataset = BddDataset(
-        params=params,
-        is_train=True,
-        inputsize=params.model['image_size'],
-        transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=params.mean, std=params.std
-            )
-        ]),
-        seg_mode=seg_mode,
-        debug=opt.debug
-    )
-
-    training_generator = DataLoaderX(
-        train_dataset,
-        batch_size=opt.batch_size,
-        shuffle=False,
-        num_workers=opt.num_workers,
-        pin_memory=params.pin_memory,
-        collate_fn=BddDataset.collate_fn
-    )
-
-    valid_dataset = BddDataset(
-        params=params,
-        is_train=False,
-        inputsize=params.model['image_size'],
-        transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=params.mean, std=params.std
-            )
-        ]),
-        seg_mode=seg_mode,
-        debug=opt.debug
-    )
-
-    val_generator = DataLoaderX(
-        valid_dataset,
-        batch_size=opt.batch_size,
-        shuffle=False,
-        num_workers=opt.num_workers,
-        pin_memory=params.pin_memory,
-        collate_fn=BddDataset.collate_fn
-    )
-
-    if params.need_autoanchor:
-        params.anchors_scales, params.anchors_ratios = run_anchor(None, train_dataset)
-
-    model = HybridNetsBackbone(num_classes=len(params.obj_list), compound_coef=opt.compound_coef,
-                               ratios=eval(params.anchors_ratios), scales=eval(params.anchors_scales),
+    model = HybridNetsBackbone(num_classes=len(params.label_list), compound_coef=opt.compound_coef,
                                seg_classes=len(params.seg_list), backbone_name=opt.backbone,
                                seg_mode=seg_mode)
+    
+    # wrap the model with loss function, to reduce the memory usage on gpu0 and speedup
+    model = ModelWithLoss(model, debug=opt.debug)
+
+    model = model.to(memory_format=torch.channels_last)
+
+    if use_cuda:
+        model = model.to(device)
+    else :
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+
+    if opt.optim == 'adamw':
+        optimizer = torch.optim.AdamW(model.parameters(), opt.lr)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(), opt.lr, momentum=0.9, nesterov=True)
+
+    scaler = torch.cuda.amp.GradScaler(enabled=opt.amp)
+    # if opt.load_weights is not None and ckpt.get('optimizer', None):
+        # scaler.load_state_dict(ckpt['scaler'])
+        # optimizer.load_state_dict(ckpt['optimizer'])
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
+
+    training_generator, val_generator = initDataLoader(params, seg_mode=seg_mode)
 
     # load last weights
     ckpt = {}
-    # last_step = None
     if opt.load_weights:
         if opt.load_weights.endswith('.pth'):
             weights_path = opt.load_weights
         else:
             weights_path = get_last_weights(saved_path)
-        # try:
-        #     last_step = int(os.path.basename(weights_path).split('_')[-1].split('.')[0])
-        # except:
-        #     last_step = 0
 
         try:
             ckpt = torch.load(weights_path)
-            # new_weight = OrderedDict((k[6:], v) for k, v in ckpt['model'].items())
             model.load_state_dict(ckpt.get('model', ckpt), strict=False)
         except RuntimeError as e:
             print(f'[Warning] Ignoring {e}')
@@ -169,27 +128,9 @@ def train(opt):
 
     print('[Info] Successfully!!!')
 
-    writer = SummaryWriter(log_path + f'/{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}/')
-
-    # wrap the model with loss function, to reduce the memory usage on gpu0 and speedup
-    model = ModelWithLoss(model, debug=opt.debug)
-
-    model = model.to(memory_format=torch.channels_last)
-
-    if opt.num_gpus > 0:
-        model = model.cuda()
-
-    if opt.optim == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), opt.lr)
-    else:
-        optimizer = torch.optim.SGD(model.parameters(), opt.lr, momentum=0.9, nesterov=True)
-    # print(ckpt)
-    scaler = torch.cuda.amp.GradScaler(enabled=opt.amp)
-    # if opt.load_weights is not None and ckpt.get('optimizer', None):
-        # scaler.load_state_dict(ckpt['scaler'])
-        # optimizer.load_state_dict(ckpt['optimizer'])
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
+    # Timestamp for identifying training sessions
+    time_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    writer = SummaryWriter(f'{log_path}/{time_str}/')
 
     epoch = 0
     best_loss = 1e5
@@ -202,32 +143,27 @@ def train(opt):
     num_iter_per_epoch = len(training_generator)
     try:
         for epoch in range(opt.num_epochs):
-            # last_epoch = step // num_iter_per_epoch
-            # if epoch < last_epoch:
-            #     continue
-
             epoch_loss = []
             progress_bar = tqdm(training_generator, ascii=True)
+
             for iter, data in enumerate(progress_bar):
-                # if iter < step - last_epoch * num_iter_per_epoch:
-                #     progress_bar.update()
-                #     continue
                 try:
                     imgs = data['img']
-                    annot = data['annot']
+                    total_lane = data['totalLane']
+                    ego_lane = data['egoLane']
                     seg_annot = data['segmentation']
 
-                    if opt.num_gpus == 1:
+                    if torch.cuda.device_count() == 1:
                         # if only one gpu, just send it to cuda:0
-                        imgs = imgs.to(device="cuda", memory_format=torch.channels_last)
-                        annot = annot.cuda()
+                        imgs = imgs.to(device=device, memory_format=torch.channels_last)
+                        ego_lane = ego_lane.cuda()
                         seg_annot = seg_annot.cuda()
 
                     optimizer.zero_grad(set_to_none=True)
                     with torch.cuda.amp.autocast(enabled=opt.amp):
-                        cls_loss, reg_loss, seg_loss, regression, classification, anchors, segmentation = model(imgs, annot,
-                                                                                                                seg_annot,
-                                                                                                                obj_list=params.obj_list)
+                        cls_loss, reg_loss, seg_loss, regression, classification, segmentation = model(imgs, ego_lane,
+                                                                                                        seg_annot,
+                                                                                                        label_list=params.label_list)
                         cls_loss = cls_loss.mean()
                         reg_loss = reg_loss.mean()
                         seg_loss = seg_loss.mean()
@@ -283,7 +219,61 @@ def train(opt):
     finally:
         writer.close()
 
+def initDataLoader(params, seg_mode):
+    train_dataset = BddDataset(
+        params=params,
+        is_train=True,
+        inputsize=params.model['image_size'],
+        transform=transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=params.mean, std=params.std
+            )
+        ]),
+        seg_mode=seg_mode,
+        debug=opt.debug
+    )
+
+    training_generator = DataLoaderX(
+        train_dataset,
+        batch_size=opt.batch_size,
+        shuffle=False,
+        num_workers=opt.num_workers,
+        pin_memory=params.pin_memory,
+        collate_fn=BddDataset.collate_fn
+    )
+
+    valid_dataset = BddDataset(
+        params=params,
+        is_train=False,
+        inputsize=params.model['image_size'],
+        transform=transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=params.mean, std=params.std
+            )
+        ]),
+        seg_mode=seg_mode,
+        debug=opt.debug
+    )
+
+    val_generator = DataLoaderX(
+        valid_dataset,
+        batch_size=opt.batch_size,
+        shuffle=False,
+        num_workers=opt.num_workers,
+        pin_memory=params.pin_memory,
+        collate_fn=BddDataset.collate_fn
+    )
+
+    return training_generator, val_generator
+
 
 if __name__ == '__main__':
     opt = get_args()
+    saved_path = f'checkpoints/{opt.project}/'
+    log_path = f'checkpoints/{opt.project}/tensorboard/'
+    os.makedirs(log_path, exist_ok=True)
+    os.makedirs(saved_path, exist_ok=True)
+
     train(opt)

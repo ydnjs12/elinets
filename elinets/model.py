@@ -4,7 +4,7 @@ from torchvision.ops.boxes import nms as nms_torch
 import torch.nn.functional as F
 import math
 from functools import partial
-from hybridnets.loss import FocalLoss, FocalLossSeg, TverskyLoss
+from elinets.loss import FocalLoss, FocalLossSeg, TverskyLoss
 
 
 def nms(dets, thresh):
@@ -20,22 +20,22 @@ class ModelWithLoss(nn.Module):
         self.seg_criterion2 = FocalLossSeg(mode=self.model.seg_mode, alpha=0.25)
         self.debug = debug
 
-    def forward(self, imgs, annotations, seg_annot, obj_list=None):
-        _, regression, classification, anchors, segmentation = self.model(imgs)
+    def forward(self, imgs, annotations, seg_annot, label_list=None):
+        _, regression, classification, segmentation = self.model(imgs)
 
         if self.debug:
-            cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations,
-                                                imgs=imgs, obj_list=obj_list)
+            cls_loss, reg_loss = self.criterion(classification, regression, annotations,
+                                                imgs=imgs, obj_list=label_list)
             tversky_loss = self.seg_criterion1(segmentation, seg_annot)
             focal_loss = self.seg_criterion2(segmentation, seg_annot)
         else:
-            cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations)
+            cls_loss, reg_loss = self.criterion(classification, regression, annotations)
             tversky_loss = self.seg_criterion1(segmentation, seg_annot)
             focal_loss = self.seg_criterion2(segmentation, seg_annot)
 
         seg_loss = tversky_loss + 1 * focal_loss
 
-        return cls_loss, reg_loss, seg_loss, regression, classification, anchors, segmentation
+        return cls_loss, reg_loss, seg_loss, regression, classification, segmentation
 
 
 class SeparableConvBlock(nn.Module):

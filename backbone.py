@@ -20,10 +20,7 @@ class HybridNetsBackbone(nn.Module):
         self.fpn_num_filters = [64, 88, 112, 160, 224, 288, 384, 384, 384]
         self.fpn_cell_repeats = [3, 4, 5, 6, 7, 7, 8, 8, 8]
         self.input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
-        self.box_class_repeats = [3, 3, 3, 4, 4, 4, 5, 5, 5]
         self.pyramid_levels = [5, 5, 5, 5, 5, 5, 5, 5, 6]
-        self.aspect_ratios = kwargs.get('ratios', [(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)])
-        self.num_scales = len(kwargs.get('scales', [2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)]))
         conv_channel_coef = {
             # the channels of P3/P4/P5.
             0: [40, 112, 320],
@@ -48,8 +45,6 @@ class HybridNetsBackbone(nn.Module):
                     onnx_export=onnx_export)
               for _ in range(self.fpn_cell_repeats[compound_coef])])
 
-        self.num_classes = num_classes
-
         '''Modified by Dat Vu'''
         # self.decoder = DecoderModule()
         self.bifpndecoder = BiFPNDecoder(pyramid_channels=self.fpn_num_filters[self.compound_coef])
@@ -63,10 +58,11 @@ class HybridNetsBackbone(nn.Module):
         )
 
         self.classification_head = ClassificationHead(in_channels=self.fpn_num_filters[self.compound_coef],
-                                     num_classes=num_classes,
-                                     num_layers=self.box_class_repeats[self.compound_coef],
-                                     pyramid_levels=self.pyramid_levels[self.compound_coef],
-                                     onnx_export=onnx_export)
+                                                    num_classes=num_classes,
+                                                    num_layers=4,
+                                                    pyramid_levels=self.pyramid_levels[self.compound_coef],
+                                                    onnx_export=onnx_export)
+        
 
         if backbone_name:
             self.encoder = timm.create_model(backbone_name, pretrained=True, features_only=True, out_indices=(2,3,4))  # P3,P4,P5
@@ -100,13 +96,13 @@ class HybridNetsBackbone(nn.Module):
 
         features = self.bifpn(features)
         
+        classification = self.classification_head(features)
+        
         p3,p4,p5,p6,p7 = features
         
         outputs = self.bifpndecoder((p2,p3,p4,p5,p6,p7))
 
         segmentation = self.segmentation_head(outputs)
-        
-        classification = self.classification_head(features)
         
         if not self.onnx_export:
             return features, classification, segmentation

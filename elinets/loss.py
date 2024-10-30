@@ -42,62 +42,20 @@ class FocalLoss(nn.Module):
 
         for j in range(batch_size):
 
-            classification = classifications[j, :, :]
+            classification = classifications[j, :]
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
             
-            gt_label = annotations[j]
+            # Get ground truth label (integer encoding)
+            gt_label = annotations[j].long() - 1
             
-            # Generate targets by converting to one-hot encoding
-            targets = torch.zeros_like(classification)
-            targets[torch.arange(classification.shape[0]), gt_label.long()] = 1
-
-            if torch.cuda.is_available():
-                alpha_factor = torch.ones_like(classification) * alpha
-                alpha_factor = alpha_factor.cuda()
-                alpha_factor = 1. - alpha_factor
-                focal_weight = classification
-                focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-                bce = -(torch.log(1.0 - classification))
-
-                cls_loss = focal_weight * bce
-
-                classification_losses.append(cls_loss.sum())
-            else:
-                alpha_factor = torch.ones_like(classification) * alpha
-                alpha_factor = 1. - alpha_factor
-                focal_weight = classification
-                focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-                bce = -(torch.log(1.0 - classification))
-
-                cls_loss = focal_weight * bce
-
-                classification_losses.append(cls_loss.sum())
-
-                continue
+            alpha_factor = torch.ones_like(classification) * alpha
+            alpha_factor[gt_label] = 1 - alpha
+            focal_weight = (1 - classification[gt_label]) ** gamma 
             
-            if torch.cuda.is_available():
-                targets = targets.cuda()
-            
-            alpha_factor = torch.ones_like(targets) * alpha
-            if torch.cuda.is_available():
-                alpha_factor = alpha_factor.cuda()
+            cls_loss = F.cross_entropy(classification.unsqueeze(0), gt_label.unsqueeze(0), reduction='none')
+            cls_loss *= alpha_factor[gt_label] * focal_weight
 
-            alpha_factor = torch.where(torch.eq(targets, 1.), alpha_factor, 1. - alpha_factor)
-            focal_weight = torch.where(torch.eq(targets, 1.), 1. - classification, classification)
-            focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-            bce = -(targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
-
-            cls_loss = focal_weight * bce
-
-            zeros = torch.zeros_like(cls_loss)
-            if torch.cuda.is_available():
-                zeros = zeros.cuda()
-            cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, zeros)
-
-            classification_losses.append(cls_loss.sum() / torch.clamp(targets.sum(), min=1.0))
+            classification_losses.append(cls_loss)
 
         return torch.stack(classification_losses).mean(dim=0, keepdim=True)
 

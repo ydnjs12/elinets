@@ -133,37 +133,32 @@ def preprocess_video(*frame_from_video, max_size=512, mean=(0.406, 0.456, 0.485)
     return ori_imgs, framed_imgs, framed_metas
 
 
-def postprocess(x, classification, threshold, iou_threshold):
+def postprocess(x, classification, threshold):
     scores = torch.max(classification, dim=2, keepdim=True)[0]
     scores_over_thresh = (scores > threshold)[:, :, 0]
     out = []
     for i in range(x.shape[0]):
         if scores_over_thresh[i].sum() == 0:
             out.append({
-                'rois': np.array(()),
                 'class_ids': np.array(()),
                 'scores': np.array(()),
             })
             continue
 
         classification_per = classification[i, scores_over_thresh[i, :], ...].permute(1, 0)
-        transformed_anchors_per = transformed_anchors[i, scores_over_thresh[i, :], ...]
         scores_per = scores[i, scores_over_thresh[i, :], ...]
         scores_, classes_ = classification_per.max(dim=0)
 
-        if anchors_nms_idx.shape[0] != 0:
-            classes_ = classes_[anchors_nms_idx]
-            scores_ = scores_[anchors_nms_idx]
-            boxes_ = transformed_anchors_per[anchors_nms_idx, :]
+        if classification_per.shape[0] != 0:
+            classes_ = classes_[i]
+            scores_ = scores_[i]
 
             out.append({
-                'rois': boxes_.cpu().numpy(),
                 'class_ids': classes_.cpu().numpy(),
                 'scores': scores_.cpu().numpy(),
             })
         else:
             out.append({
-                'rois': np.array(()),
                 'class_ids': np.array(()),
                 'scores': np.array(()),
             })

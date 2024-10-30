@@ -5,14 +5,13 @@ from backbone import HybridNetsBackbone
 import cv2
 import numpy as np
 from glob import glob
-from utils.utils import letterbox, scale_coords, postprocess, BBoxTransform, ClipBoxes, restricted_float, \
+from utils.utils import letterbox, scale_coords, postprocess, restricted_float, \
     boolean_string, Params
 from utils.plot import STANDARD_COLORS, standard_to_bgr, get_index_label, plot_one_box
 import os
 from torchvision import transforms
 import argparse
 from utils.constants import *
-from collections import OrderedDict
 from torch.nn import functional as F
 
 
@@ -121,8 +120,7 @@ else:
     else:
         seg_mode = MULTICLASS_MODE
 print("DETECTED SEGMENTATION MODE FROM WEIGHT AND PROJECT FILE:", seg_mode)
-model = HybridNetsBackbone(compound_coef=compound_coef, num_classes=len(obj_list), ratios=eval(anchors_ratios),
-                           scales=eval(anchors_scales), seg_classes=len(seg_list), backbone_name=args.backbone,
+model = HybridNetsBackbone(compound_coef=compound_coef, num_classes=len(obj_list), seg_classes=len(seg_list), backbone_name=args.backbone,
                            seg_mode=seg_mode)
 model.load_state_dict(weight)
 
@@ -135,7 +133,7 @@ if use_cuda:
         model = model.half()
 
 with torch.no_grad():
-    features, regression, classification, anchors, seg = model(x)
+    features, classification, anchors, seg = model(x)
 
     # in case of MULTILABEL_MODE, each segmentation class gets their own inference image
     seg_mask_list = []
@@ -179,11 +177,7 @@ with torch.no_grad():
             if show_seg or seg_mode == MULTILABEL_MODE:
                 cv2.imwrite(seg_filename, cv2.cvtColor(seg_img, cv2.COLOR_RGB2BGR))
 
-    regressBoxes = BBoxTransform()
-    clipBoxes = ClipBoxes()
-    out = postprocess(x,
-                      anchors, regression, classification,
-                      regressBoxes, clipBoxes,
+    out = postprocess(x, anchors, classification,
                       threshold, iou_threshold)
 
     for i in range(len(ori_imgs)):
@@ -218,11 +212,9 @@ with torch.no_grad():
     x.unsqueeze_(0)
     t1 = time.time()
     for _ in range(10):
-        _, regression, classification, anchors, segmentation = model(x)
+        _, classification, anchors, segmentation = model(x)
 
-        out = postprocess(x,
-                          anchors, regression, classification,
-                          regressBoxes, clipBoxes,
+        out = postprocess(x, anchors, classification,
                           threshold, iou_threshold)
 
     t2 = time.time()
@@ -235,7 +227,7 @@ with torch.no_grad():
     t1 = time.time()
     x = torch.cat([x] * 32, 0)
     for _ in range(10):
-        _, regression, classification, anchors, segmentation = model(x)
+        _, classification, anchors, segmentation = model(x)
 
     t2 = time.time()
     tact_time = (t2 - t1) / 10

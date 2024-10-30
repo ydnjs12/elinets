@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from torch.nn.modules.loss import _Loss
 import torch.nn.functional as F
-from utils.utils import postprocess, BBoxTransform, ClipBoxes
+from utils.utils import postprocess
 from typing import Optional, List
 from functools import partial
 from utils.plot import display
@@ -32,17 +32,15 @@ class FocalLoss(nn.Module):
     def __init__(self):
         super(FocalLoss, self).__init__()
 
-    def forward(self, classifications, regressions, annotations, **kwargs):
+    def forward(self, classifications, annotations, **kwargs):
         alpha = 0.25
         gamma = 2.0
         batch_size = classifications.shape[0]
         classification_losses = []
-        regression_losses = []
 
         for j in range(batch_size):
 
             classification = classifications[j, :, :]
-            regression = regressions[j, :, :]
 
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
 
@@ -58,7 +56,6 @@ class FocalLoss(nn.Module):
 
                 cls_loss = focal_weight * bce
 
-                regression_losses.append(torch.tensor(0).to(dtype).cuda())
                 classification_losses.append(cls_loss.sum())
             else:
 
@@ -71,7 +68,6 @@ class FocalLoss(nn.Module):
 
                 cls_loss = focal_weight * bce
 
-                regression_losses.append(torch.tensor(0).to(dtype))
                 classification_losses.append(cls_loss.sum())
 
                 continue
@@ -114,51 +110,19 @@ class FocalLoss(nn.Module):
 
             classification_losses.append(cls_loss.sum() / torch.clamp(num_positive_anchors.to(dtype), min=1.0))
 
-            if positive_indices.sum() > 0:
-                assigned_annotations = assigned_annotations[positive_indices, :]
-
-
-                gt_widths = assigned_annotations[:, 2] - assigned_annotations[:, 0]
-                gt_heights = assigned_annotations[:, 3] - assigned_annotations[:, 1]
-                gt_ctr_x = assigned_annotations[:, 0] + 0.5 * gt_widths
-                gt_ctr_y = assigned_annotations[:, 1] + 0.5 * gt_heights
-
-                gt_widths = torch.clamp(gt_widths, min=1)
-                gt_heights = torch.clamp(gt_heights, min=1)
-
-                targets = targets.t()
-
-                regression_diff = torch.abs(targets - regression[positive_indices, :])
-
-                regression_loss = torch.where(
-                    torch.le(regression_diff, 1.0 / 9.0),
-                    0.5 * 9.0 * torch.pow(regression_diff, 2),
-                    regression_diff - 0.5 / 9.0
-                )
-                regression_losses.append(regression_loss.mean())
-            else:
-                if torch.cuda.is_available():
-                    regression_losses.append(torch.tensor(0).to(dtype).cuda())
-                else:
-                    regression_losses.append(torch.tensor(0).to(dtype))
-
         # debug
         imgs = kwargs.get('imgs', None)
         if imgs is not None:
-            regressBoxes = BBoxTransform()
-            clipBoxes = ClipBoxes()
             obj_list = kwargs.get('label_list', None)
             out = postprocess(imgs.detach(),
-                              torch.stack(imgs.shape[0], 0).detach(), regressions.detach(), classifications.detach(),
-                              regressBoxes, clipBoxes,
+                              torch.stack(imgs.shape[0], 0).detach(), classifications.detach(),
                               0.25, 0.3)
             imgs = imgs.permute(0, 2, 3, 1).cpu().numpy()
             imgs = ((imgs * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]) * 255).astype(np.uint8)
             imgs = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR) for img in imgs]
             display(out, imgs, obj_list, imshow=False, imwrite=True)
 
-        return torch.stack(classification_losses).mean(dim=0, keepdim=True), \
-               torch.stack(regression_losses).mean(dim=0, keepdim=True) * 50  # https://github.com/google/automl/blob/6fdd1de778408625c1faf368a327fe36ecd41bf7/efficientdet/hparams_config.py#L233
+        return torch.stack(classification_losses).mean(dim=0, keepdim=True)
 
 
 def focal_loss_with_logits(

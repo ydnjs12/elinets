@@ -21,21 +21,20 @@ class ModelWithLoss(nn.Module):
         self.debug = debug
 
     def forward(self, imgs, annotations, seg_annot, label_list=None):
-        _, regression, classification, segmentation = self.model(imgs)
+        _, classification, segmentation = self.model(imgs)
 
         if self.debug:
-            cls_loss, reg_loss = self.criterion(classification, regression, annotations,
-                                                imgs=imgs, obj_list=label_list)
+            cls_loss = self.criterion(classification, annotations, imgs=imgs, obj_list=label_list)
             tversky_loss = self.seg_criterion1(segmentation, seg_annot)
             focal_loss = self.seg_criterion2(segmentation, seg_annot)
         else:
-            cls_loss, reg_loss = self.criterion(classification, regression, annotations)
+            cls_loss = self.criterion(classification, annotations)
             tversky_loss = self.seg_criterion1(segmentation, seg_annot)
             focal_loss = self.seg_criterion2(segmentation, seg_annot)
 
         seg_loss = tversky_loss + 1 * focal_loss
 
-        return cls_loss, reg_loss, seg_loss, regression, classification, segmentation
+        return cls_loss, seg_loss, classification, segmentation
 
 
 class SeparableConvBlock(nn.Module):
@@ -357,39 +356,6 @@ class BiFPN(nn.Module):
             p7_out = self.conv7_down(self.swish(p7_in + self.p7_downsample(p6_out)))
 
             return p3_out, p4_out, p5_out, p6_out, p7_out
-
-
-class Regressor(nn.Module):
-    def __init__(self, in_channels, num_anchors, num_layers, pyramid_levels=5, onnx_export=False):
-        super(Regressor, self).__init__()
-        self.num_layers = num_layers
-
-        self.conv_list = nn.ModuleList(
-            [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for i in range(num_layers)])
-        self.bn_list = nn.ModuleList(
-            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
-             range(pyramid_levels)])
-        self.header = SeparableConvBlock(in_channels, num_anchors * 4, norm=False, activation=False)
-        self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
-
-    def forward(self, inputs):
-        feats = []
-        for feat, bn_list in zip(inputs, self.bn_list):
-            for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
-                feat = conv(feat)
-                feat = bn(feat)
-                feat = self.swish(feat)
-            feat = self.header(feat)
-
-            feat = feat.permute(0, 2, 3, 1)
-            feat = feat.contiguous().view(feat.shape[0], -1, 4)
-
-            feats.append(feat)
-
-        feats = torch.cat(feats, dim=1)
-
-        return feats
-
 
 class Conv3x3BNSwish(nn.Module):
     def __init__(self, in_channels, out_channels, upsample=False):

@@ -8,11 +8,11 @@ seg_list: ['road', 'line']
 seg_multilabel: false  # a pixel can belong to multiple labels (i.e. lane line + underlying road)
 
 dataset:
-  dataroot: /home/a/yewon_ws/src/DLENets/datasets/bdd100k/images/100k/
-  labelroot: /home/a/yewon_ws/src/DLENets/datasets/bdd100k/labels/drivable/polygons/
+  dataroot: ./datasets/bdd100k/images/100k/
+  labelroot: ./datasets
   segroot:
-  - /home/a/yewon_ws/src/DLENets/datasets/bdd_seg_gt
-  - /home/a/yewon_ws/src/DLENets/datasets/bdd_lane_gt/
+  - ./datasets/bdd_seg_gt/
+  - ./datasets/bdd_lane_gt/
   test_set: val
   train_set: train
   org_img_size:
@@ -27,11 +27,6 @@ dataset:
   scale_factor: 0.25
   shear: 0.0
   translate: 0.1
-  # on bdd100k dataset, the below augmentations look really stupid on segmentation, so use freeze_seg if possible (free to prove us otherwise)
-  # we only used mosaic with freeze_seg and no mixup
-  # IMPORTANT: as mixup makes segmentation multi-label inherently, just use freeze_seg if you're going for multi-class segmentation, please
-  mosaic: 0.0  # if set, recommended at 1.0 
-  mixup: 0.0  # if set, recommended at 0.1
 model:
   image_size:
   - 640

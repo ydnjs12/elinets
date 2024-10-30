@@ -30,20 +30,19 @@ class BddDataset(Dataset):
         self.inputsize = inputsize
         self.Tensor = transforms.ToTensor()
 
-        img_root = Path(params.dataset['dataroot'])
-        label_root = Path(params.dataset['labelroot'])
+        img_root = params.dataset['dataroot']
+        label_root = params.dataset['labelroot']
         seg_root = params.dataset['segroot']
         self.label_list = params.label_list
         self.seg_list = params.seg_list
         
         indicator = params.dataset['train_set'] if is_train else params.dataset['test_set']
-        self.img_root = img_root / indicator
-        self.label_root = label_root / f"drivable_{indicator}_custom.json"
-        self.seg_root = [Path(root) / indicator for root in seg_root]
+        self.img_root = f"{img_root}/{indicator}"
+        self.label_root = f"{label_root}/drivable_{indicator}_custom.json"
+        self.seg_root = [f"{root}/{indicator}" for root in seg_root]
 
         self.shapes = np.array(params.dataset['org_img_size'])
         self.dataset = params.dataset
-        self.mosaic_border = [-1 * self.inputsize[1] // 2, -1 * self.inputsize[0] // 2]
         self.seg_mode = seg_mode
         self.db = self._get_db()
 
@@ -69,13 +68,12 @@ class BddDataset(Dataset):
             raise
 
         for label in tqdm(labels, ascii=True):
-            image_path = Path(self.img_root / label['name'])
+            image_path = Path(self.img_root) / label['name']
 
             seg_path = {}
             for i in range(len(self.seg_list)):
-                seg_path[self.seg_list[i]] = Path(self.seg_root[i]/ (label['name'].replace(".jpg", ".png")))
+                seg_path[self.seg_list[i]] = Path(self.seg_root[i]) / (label['name'].replace(".jpg", ".png"))
 
-            gt = {}
             data = label['info'][0]
             if data['egoLane'] != "" and (int(data['totalLane']) if data['totalLane'] != "" else 10) <= len(self.label_list):
                 rec = {
@@ -204,9 +202,6 @@ class BddDataset(Dataset):
     @staticmethod
     def collate_fn(batch):
         img, paths, shapes, total_lane, ego_lane, segmentation = zip(*batch)
-
-        # total_lane = torch.tensor([label['totalLane'] for label in label_app], dtype=torch.float32).unsqueeze(1)  # Shape: (batch_size, 1)
-        # ego_lane = torch.tensor([label['egoLane'] for label in label_app],dtype=torch.float32).unsqueeze(1)  # Shape: (batch_size, 1)
 
         return {'img': torch.stack(img, 0), 
                 'totalLane': torch.tensor(total_lane), 

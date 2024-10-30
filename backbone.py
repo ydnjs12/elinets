@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import timm
 
-from elinets.model import BiFPN, Regressor, Classifier, BiFPNDecoder
+from elinets.model import BiFPN, Classifier, BiFPNDecoder
 from utils.utils import Anchors
 from elinets.model import SegmentationHead
 
@@ -53,10 +53,6 @@ class HybridNetsBackbone(nn.Module):
               for _ in range(self.fpn_cell_repeats[compound_coef])])
 
         self.num_classes = num_classes
-        self.regressor = Regressor(in_channels=self.fpn_num_filters[self.compound_coef], num_anchors=num_anchors,
-                                   num_layers=self.box_class_repeats[self.compound_coef],
-                                   pyramid_levels=self.pyramid_levels[self.compound_coef],
-                                   onnx_export=onnx_export)
 
         '''Modified by Dat Vu'''
         # self.decoder = DecoderModule()
@@ -118,14 +114,13 @@ class HybridNetsBackbone(nn.Module):
 
         segmentation = self.segmentation_head(outputs)
         
-        regression = self.regressor(features)
         classification = self.classifier(features)
         anchors = self.anchors(inputs, inputs.dtype)
         
         if not self.onnx_export:
-            return features, regression, classification, anchors, segmentation
+            return features, classification, anchors, segmentation
         else:
-            return regression, classification, segmentation
+            return classification, segmentation
     def initialize_decoder(self, module):
         for m in module.modules():
 

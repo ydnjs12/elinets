@@ -50,8 +50,6 @@ def get_args():
                         help='Calculate mAP in validation')
     parser.add_argument('-v', '--verbose', type=boolean_string, default=True,
                         help='Whether to print results per class when valing')
-    parser.add_argument('--plots', type=boolean_string, default=True,
-                        help='Whether to plot confusion matrix when valing')
     parser.add_argument('--conf_thres', type=float, default=0.001,
                         help='Confidence threshold in NMS')
     parser.add_argument('--iou_thres', type=float, default=0.6,
@@ -98,10 +96,7 @@ def train(opt):
     else:
         optimizer = torch.optim.SGD(model.parameters(), opt.lr, momentum=0.9, nesterov=True)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=opt.amp)
-    # if opt.load_weights is not None and ckpt.get('optimizer', None):
-        # scaler.load_state_dict(ckpt['scaler'])
-        # optimizer.load_state_dict(ckpt['optimizer'])
+    scaler = torch.amp.GradScaler(device=device, enabled=opt.amp)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 
@@ -153,22 +148,20 @@ def train(opt):
                     ego_lane = data['egoLane']
                     seg_annot = data['segmentation']
 
-                    if torch.cuda.device_count() == 1:
-                        # if only one gpu, just send it to cuda:0
+                    if torch.cuda.device_count() > 0:
                         imgs = imgs.to(device=device, memory_format=torch.channels_last)
                         ego_lane = ego_lane.cuda()
                         seg_annot = seg_annot.cuda()
 
                     optimizer.zero_grad(set_to_none=True)
-                    with torch.cuda.amp.autocast(enabled=opt.amp):
-                        cls_loss, reg_loss, seg_loss, regression, classification, segmentation = model(imgs, ego_lane,
-                                                                                                        seg_annot,
-                                                                                                        label_list=params.label_list)
+                    with torch.amp.autocast(device_type=device, enabled=opt.amp):
+                        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane,
+                                                                                seg_annot,
+                                                                                label_list=params.label_list)
                         cls_loss = cls_loss.mean()
-                        reg_loss = reg_loss.mean()
                         seg_loss = seg_loss.mean()
 
-                        loss = cls_loss + reg_loss + seg_loss
+                        loss = cls_loss + seg_loss
                         
                     if loss == 0 or not torch.isfinite(loss):
                         continue
@@ -185,11 +178,10 @@ def train(opt):
                     epoch_loss.append(float(loss))
 
                     progress_bar.set_description(
-                        'Step: {}. Epoch: {}/{}. Iteration: {}/{}. Cls loss: {:.5f}. Reg loss: {:.5f}. Seg loss: {:.5f}. Total loss: {:.5f}'.format(
+                        'Step: {}. Epoch: {}/{}. Iteration: {}/{}. Cls loss: {:.5f}. Seg loss: {:.5f}. Total loss: {:.5f}'.format(
                             step, epoch, opt.num_epochs, iter + 1, num_iter_per_epoch, cls_loss.item(),
-                            reg_loss.item(), seg_loss.item(), loss.item()))
+                            seg_loss.item(), loss.item()))
                     writer.add_scalars('Loss', {'train': loss}, step)
-                    writer.add_scalars('Regression_loss', {'train': reg_loss}, step)
                     writer.add_scalars('Classfication_loss', {'train': cls_loss}, step)
                     writer.add_scalars('Segmentation_loss', {'train': seg_loss}, step)
 
@@ -200,7 +192,7 @@ def train(opt):
                     step += 1
 
                     if step % opt.save_interval == 0 and step > 0:
-                        save_checkpoint(model, saved_path, f'hybridnets-d{opt.compound_coef}_{epoch}_{step}.pth')
+                        save_checkpoint(model, saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}.pth')
                         print('checkpoint...')
 
                 except Exception as e:
@@ -215,7 +207,7 @@ def train(opt):
                                                           optimizer=optimizer, scaler=scaler, writer=writer, epoch=epoch, step=step, 
                                                           best_fitness=best_fitness, best_loss=best_loss, best_epoch=best_epoch)
     except KeyboardInterrupt:
-        save_checkpoint(model, saved_path, f'hybridnets-d{opt.compound_coef}_{epoch}_{step}.pth')
+        save_checkpoint(model, saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}.pth')
     finally:
         writer.close()
 

@@ -6,7 +6,7 @@ import os
 
 from utils import smp_metrics
 from utils.utils import ConfusionMatrix, postprocess, scale_coords, process_batch, ap_per_class, fitness, \
-    save_checkpoint, DataLoaderX, BBoxTransform, ClipBoxes, boolean_string, Params
+    save_checkpoint, DataLoaderX, boolean_string, Params
 from backbone import HybridNetsBackbone
 from elinets.dataset import BddDataset
 from torchvision import transforms
@@ -28,27 +28,23 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
     best_loss = kwargs.get('best_loss', 0)
     best_epoch = kwargs.get('best_epoch', 0)
 
-    loss_regression_ls = []
     loss_classification_ls = []
     loss_segmentation_ls = []
     stats, ap, ap_class = [], [], []
     iou_thresholds = torch.linspace(0.5, 0.95, 10).cuda()  # iou vector for mAP@0.5:0.95
     num_thresholds = iou_thresholds.numel()
     names = {i: v for i, v in enumerate(params.label_list)}
-    nc = len(names)
     ncs = 1 if seg_mode == BINARY_MODE else len(params.seg_list) + 1
     seen = 0
-    confusion_matrix = ConfusionMatrix(nc=nc)
+    confusion_matrix = ConfusionMatrix(nc=len(names))
     s_seg = ' ' * (15 + 11 * 8)
     s = ('%-15s' + '%-11s' * 8) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95', 'mIoU', 'mAcc')
     for i in range(len(params.seg_list)):
-            s_seg += '%-33s' % params.seg_list[i]
-            s += ('%-11s' * 3) % ('mIoU', 'IoU', 'Acc')
+        s_seg += '%-33s' % params.seg_list[i]
+        s += ('%-11s' * 3) % ('mIoU', 'IoU', 'Acc')
     p, r, f1, mp, mr, map50, map = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     iou_ls = [[] for _ in range(ncs)]
     acc_ls = [[] for _ in range(ncs)]
-    regressBoxes = BBoxTransform()
-    clipBoxes = ClipBoxes()
 
     val_loader = tqdm(val_generator, ascii=True)
     for iter, data in enumerate(val_loader):
@@ -59,47 +55,44 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         filenames = data['filenames']
         shapes = data['shapes']
 
-        if opt.num_gpus == 1:
+        if torch.cuda.device_count() > 0:
             imgs = imgs.cuda()
-            annot = annot.cuda()
+            ego_lane = ego_lane.cuda()
             seg_annot = seg_annot.cuda()
 
-        cls_loss, reg_loss, seg_loss, regression, classification, segmentation = model(imgs, ego_lane,
-                                                                                        seg_annot,
-                                                                                        label_list=params.label_list)
+        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane,
+                                                                seg_annot,
+                                                                label_list=params.label_list)
         cls_loss = cls_loss.mean()
-        reg_loss = reg_loss.mean()
         seg_loss = seg_loss.mean()
 
         if opt.cal_map:
             out = postprocess(imgs.detach(),
-                              torch.stack(imgs.shape[0], 0).detach(), regression.detach(),
+                              torch.stack(imgs.shape[0], 0).detach(),
                               classification.detach(),
-                              regressBoxes, clipBoxes,
                               opt.conf_thres, opt.iou_thres)  # 0.5, 0.3
 
-            for i in range(annot.size(0)):
+            for i in range(ego_lane.size(0)):
                 seen += 1
-                labels = annot[i]
+                labels = ego_lane[i]
                 labels = labels[labels[:, 4] != -1]
 
                 ou = out[i]
-                nl = len(labels)
 
                 pred = np.column_stack([ou['rois'], ou['scores']])
                 pred = np.column_stack([pred, ou['class_ids']])
                 pred = torch.from_numpy(pred).cuda()
 
-                target_class = labels[:, 4].tolist() if nl else []  # target class
+                target_class = labels[:, 4].tolist() if len(labels) else []  # target class
 
                 if len(pred) == 0:
-                    if nl:
+                    if len(labels):
                         stats.append((torch.zeros(0, num_thresholds, dtype=torch.bool),
                                       torch.Tensor(), torch.Tensor(), target_class))
                     # print("here")
                     continue
 
-                if nl:
+                if len(labels):
                     pred[:, :4] = scale_coords(imgs[i][1:], pred[:, :4], shapes[i][0], shapes[i][1])
                     labels = scale_coords(imgs[i][1:], labels, shapes[i][0], shapes[i][1])
                     # ori_img = cv2.imread('datasets/bdd100k_effdet/val/' + filenames[i],
@@ -115,8 +108,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
 
                     # cv2.imwrite('pre+label-{}.jpg'.format(filenames[i]), ori_img)
                     correct = process_batch(pred, labels, iou_thresholds)
-                    if opt.plots:
-                        confusion_matrix.process_batch(pred, labels)
+                    confusion_matrix.process_batch(pred, labels)
                 else:
                     correct = torch.zeros(pred.shape[0], num_thresholds, dtype=torch.bool)
                 stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), target_class))
@@ -147,32 +139,28 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
                                                                    threshold=0.5 if seg_mode != MULTICLASS_MODE else None,
                                                                    num_classes=ncs if seg_mode == MULTICLASS_MODE else None)
             iou = smp_metrics.iou_score(tp_seg, fp_seg, fn_seg, tn_seg, reduction='none')
-            #         print(iou)
             acc = smp_metrics.balanced_accuracy(tp_seg, fp_seg, fn_seg, tn_seg, reduction='none')
 
             for i in range(ncs):
                 iou_ls[i].append(iou.T[i].detach().cpu().numpy())
                 acc_ls[i].append(acc.T[i].detach().cpu().numpy())
 
-        loss = cls_loss + reg_loss + seg_loss
+        loss = cls_loss + seg_loss
         if loss == 0 or not torch.isfinite(loss):
             continue
 
         loss_classification_ls.append(cls_loss.item())
-        loss_regression_ls.append(reg_loss.item())
         loss_segmentation_ls.append(seg_loss.item())
 
     cls_loss = np.mean(loss_classification_ls)
-    reg_loss = np.mean(loss_regression_ls)
     seg_loss = np.mean(loss_segmentation_ls)
-    loss = cls_loss + reg_loss + seg_loss
+    loss = cls_loss + seg_loss
 
     print(
         'Val. Epoch: {}/{}. Classification loss: {:1.5f}. Regression loss: {:1.5f}. Segmentation loss: {:1.5f}. Total loss: {:1.5f}'.format(
-            epoch, opt.num_epochs if is_training else 0, cls_loss, reg_loss, seg_loss, loss))
+            epoch, opt.num_epochs if is_training else 0, cls_loss, seg_loss, loss))
     if is_training:
         writer.add_scalars('Loss', {'val': loss}, step)
-        writer.add_scalars('Regression_loss', {'val': reg_loss}, step)
         writer.add_scalars('Classfication_loss', {'val': cls_loss}, step)
         writer.add_scalars('Segmentation_loss', {'val': seg_loss}, step)
 
@@ -180,9 +168,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         for i in range(ncs):
             iou_ls[i] = np.concatenate(iou_ls[i])
             acc_ls[i] = np.concatenate(acc_ls[i])
-        # print(len(iou_ls[0]))
         iou_score = np.mean(iou_ls)
-        # print(iou_score)
         acc_score = np.mean(acc_ls)
 
         miou_ls = []
@@ -199,10 +185,6 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
 
         # Compute statistics
         stats = [np.concatenate(x, 0) for x in zip(*stats)]
-        # print(stats[3])
-
-        # Count detected boxes per class
-        # boxes_per_class = np.bincount(stats[2].astype(np.int64), minlength=1)
 
         ap50 = None
         save_dir = 'plots'
@@ -210,7 +192,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
 
         # Compute metrics
         if len(stats) and stats[0].any():
-            p, r, f1, ap, ap_class = ap_per_class(*stats, plot=opt.plots, save_dir=save_dir, names=names)
+            p, r, f1, ap, ap_class = ap_per_class(*stats, plot=True, save_dir=save_dir, names=names)
             ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
             mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
             nt = np.bincount(stats[3].astype(np.int64), minlength=1)  # number of targets per class
@@ -227,15 +209,14 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         print(pf)
 
         # Print results per class
-        if opt.verbose and nc > 1 and len(stats):
+        if opt.verbose and len(names) > 1 and len(stats):
             pf = '%-15s' + '%-11i' * 2 + '%-11.3g' * 4
             for i, c in enumerate(ap_class):
                 print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
 
         # Plots
-        if opt.plots:
-            confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
-            confusion_matrix.tp_fp()
+        confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
+        confusion_matrix.tp_fp()
 
         results = (mp, mr, map50, map, iou_score, acc_score, loss)
         fi = fitness(
@@ -251,14 +232,14 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
                     'optimizer': optimizer.state_dict(),
                     'scaler': scaler.state_dict()}
             print("Saving checkpoint with best fitness", fi[0])
-            save_checkpoint(ckpt, opt.saved_path, f'hybridnets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
+            save_checkpoint(ckpt, opt.saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
     else:
         # if not calculating map, save by best loss
         if is_training and loss + opt.es_min_delta < best_loss:
             best_loss = loss
             best_epoch = epoch
 
-            save_checkpoint(model, opt.saved_path, f'hybridnets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
+            save_checkpoint(model, opt.saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
 
     # Early stopping
     if is_training and epoch - best_epoch > opt.es_patience > 0:
@@ -283,10 +264,6 @@ if __name__ == "__main__":
                     help='Whether to print results per class when valing')
     ap.add_argument('--cal_map', type=boolean_string, default=True,
                         help='Calculate mAP in validation')
-    ap.add_argument('--plots', type=boolean_string, default=True,
-                    help='Whether to plot confusion matrix when valing')
-    ap.add_argument('--num_gpus', type=int, default=1,
-                    help='Number of GPUs to be used (0 to use CPU)')
     ap.add_argument('--conf_thres', type=float, default=0.001,
                     help='Confidence threshold in NMS')
     ap.add_argument('--iou_thres', type=float, default=0.6,
@@ -298,7 +275,6 @@ if __name__ == "__main__":
     weights_path = f'weights/elinets-d{compound_coef}.pth' if args.weights is None else args.weights
 
     params = Params(f'projects/{project_name}.yml')
-    obj_list = params.obj_list
     seg_mode = MULTILABEL_MODE if params.seg_multilabel else MULTICLASS_MODE if len(params.seg_list) > 1 else BINARY_MODE
 
     valid_dataset = BddDataset(
@@ -324,7 +300,6 @@ if __name__ == "__main__":
     )
 
     model = HybridNetsBackbone(compound_coef=compound_coef, num_classes=len(params.label_list),
-                               ratios=eval(params.anchors_ratios), scales=eval(params.anchors_scales),
                                seg_classes=len(params.seg_list), backbone_name=args.backbone,
                                seg_mode=seg_mode)
     

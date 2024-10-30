@@ -68,7 +68,6 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
 
         if opt.cal_map:
             out = postprocess(imgs.detach(),
-                              torch.stack(imgs.shape[0], 0).detach(),
                               classification.detach(),
                               opt.conf_thres, opt.iou_thres)  # 0.5, 0.3
 
@@ -157,7 +156,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
     loss = cls_loss + seg_loss
 
     print(
-        'Val. Epoch: {}/{}. Classification loss: {:1.5f}. Regression loss: {:1.5f}. Segmentation loss: {:1.5f}. Total loss: {:1.5f}'.format(
+        'Val. Epoch: {}/{}. Classification loss: {:1.5f}. Segmentation loss: {:1.5f}. Total loss: {:1.5f}'.format(
             epoch, opt.num_epochs if is_training else 0, cls_loss, seg_loss, loss))
     if is_training:
         writer.add_scalars('Loss', {'val': loss}, step)
@@ -209,7 +208,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         print(pf)
 
         # Print results per class
-        if opt.verbose and len(names) > 1 and len(stats):
+        if len(names) > 1 and len(stats):
             pf = '%-15s' + '%-11i' * 2 + '%-11.3g' * 4
             for i, c in enumerate(ap_class):
                 print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
@@ -260,8 +259,6 @@ if __name__ == "__main__":
     ap.add_argument('-w', '--weights', type=str, default='weights/hybridnets.pth', help='/path/to/weights')
     ap.add_argument('-n', '--num_workers', type=int, default=12, help='Num_workers of dataloader')
     ap.add_argument('--batch_size', type=int, default=12, help='The number of images per batch among all devices')
-    ap.add_argument('-v', '--verbose', type=boolean_string, default=True,
-                    help='Whether to print results per class when valing')
     ap.add_argument('--cal_map', type=boolean_string, default=True,
                         help='Calculate mAP in validation')
     ap.add_argument('--conf_thres', type=float, default=0.001,
@@ -307,7 +304,7 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(weights_path))
     except:
         model.load_state_dict(torch.load(weights_path)['model'])
-    model = ModelWithLoss(model, debug=False)
+    model = ModelWithLoss(model)
     model.requires_grad_(False)
 
     use_cuda = torch.cuda.is_available()

@@ -29,23 +29,29 @@ def calc_iou(a, b):
 
 
 class FocalLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, alpha=0.25, gamma=2.0):
         super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
 
     def forward(self, classifications, annotations, **kwargs):
-        alpha = 0.25
-        gamma = 2.0
+        alpha = self.alpha
+        gamma = self.gamma
         batch_size = classifications.shape[0]
         classification_losses = []
 
         for j in range(batch_size):
 
             classification = classifications[j, :, :]
-
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
+            
+            gt_label = annotations[j]
+            
+            # Generate targets by converting to one-hot encoding
+            targets = torch.zeros_like(classification)
+            targets[torch.arange(classification.shape[0]), gt_label.long()] = 1
 
             if torch.cuda.is_available():
-
                 alpha_factor = torch.ones_like(classification) * alpha
                 alpha_factor = alpha_factor.cuda()
                 alpha_factor = 1. - alpha_factor
@@ -58,7 +64,6 @@ class FocalLoss(nn.Module):
 
                 classification_losses.append(cls_loss.sum())
             else:
-
                 alpha_factor = torch.ones_like(classification) * alpha
                 alpha_factor = 1. - alpha_factor
                 focal_weight = classification
@@ -71,26 +76,10 @@ class FocalLoss(nn.Module):
                 classification_losses.append(cls_loss.sum())
 
                 continue
-
-            # compute the loss for classification
-            #targets = torch.ones_like(classification) * -1
-            targets = torch.zeros_like(classification)
             
             if torch.cuda.is_available():
                 targets = targets.cuda()
             
-            assigned_annotations = bbox_annotation[IoU_argmax, :]
-            
-            positive_indices = torch.full_like(IoU_max,False,dtype=torch.bool) #torch.ge(IoU_max, 0.2) 
-                        
-            smooth_region = (assigned_annotations[:, 2] - assigned_annotations[:, 0]) * (assigned_annotations[:, 3] - assigned_annotations[:, 1]) > 10 * 10
-
-            positive_indices[torch.logical_or(torch.logical_and(smooth_region,IoU_max >= 0.5),torch.logical_and(~smooth_region,IoU_max >= 0.15))] = True
-
-            num_positive_anchors = positive_indices.sum()
-           
-            targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1
-    
             alpha_factor = torch.ones_like(targets) * alpha
             if torch.cuda.is_available():
                 alpha_factor = alpha_factor.cuda()
@@ -108,19 +97,7 @@ class FocalLoss(nn.Module):
                 zeros = zeros.cuda()
             cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, zeros)
 
-            classification_losses.append(cls_loss.sum() / torch.clamp(num_positive_anchors.to(dtype), min=1.0))
-
-        # debug
-        imgs = kwargs.get('imgs', None)
-        if imgs is not None:
-            obj_list = kwargs.get('label_list', None)
-            out = postprocess(imgs.detach(),
-                              torch.stack(imgs.shape[0], 0).detach(), classifications.detach(),
-                              0.25, 0.3)
-            imgs = imgs.permute(0, 2, 3, 1).cpu().numpy()
-            imgs = ((imgs * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]) * 255).astype(np.uint8)
-            imgs = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR) for img in imgs]
-            display(out, imgs, obj_list, imshow=False, imwrite=True)
+            classification_losses.append(cls_loss.sum() / torch.clamp(targets.sum(), min=1.0))
 
         return torch.stack(classification_losses).mean(dim=0, keepdim=True)
 

@@ -3,14 +3,13 @@ from torch import nn
 import timm
 
 from elinets.model import BiFPN, Classifier, BiFPNDecoder
-from utils.utils import Anchors
 from elinets.model import SegmentationHead
 
 from encoders import get_encoder
 from utils.constants import *
 
 class HybridNetsBackbone(nn.Module):
-    def __init__(self, num_classes=80, compound_coef=0, seg_classes=1, backbone_name=None, seg_mode=MULTICLASS_MODE, onnx_export=False, **kwargs):
+    def __init__(self, num_classes=10, compound_coef=0, seg_classes=1, backbone_name=None, seg_mode=MULTICLASS_MODE, onnx_export=False, **kwargs):
         super(HybridNetsBackbone, self).__init__()
         self.compound_coef = compound_coef
 
@@ -23,8 +22,6 @@ class HybridNetsBackbone(nn.Module):
         self.input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
         self.box_class_repeats = [3, 3, 3, 4, 4, 4, 5, 5, 5]
         self.pyramid_levels = [5, 5, 5, 5, 5, 5, 5, 5, 6]
-        self.anchor_scale = [1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.25,1.25,]
-        # self.anchor_scale = [2.,2.,2.,2.,2.,2.,2.,2.,2.,]
         self.aspect_ratios = kwargs.get('ratios', [(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)])
         self.num_scales = len(kwargs.get('scales', [2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)]))
         conv_channel_coef = {
@@ -41,7 +38,6 @@ class HybridNetsBackbone(nn.Module):
         }
 
         self.onnx_export = onnx_export
-        num_anchors = len(self.aspect_ratios) * self.num_scales
 
         self.bifpn = nn.Sequential(
             *[BiFPN(self.fpn_num_filters[self.compound_coef],
@@ -66,7 +62,7 @@ class HybridNetsBackbone(nn.Module):
             upsampling=4,
         )
 
-        self.classifier = Classifier(in_channels=self.fpn_num_filters[self.compound_coef], num_anchors=num_anchors,
+        self.classifier = Classifier(in_channels=self.fpn_num_filters[self.compound_coef],
                                      num_classes=num_classes,
                                      num_layers=self.box_class_repeats[self.compound_coef],
                                      pyramid_levels=self.pyramid_levels[self.compound_coef],
@@ -83,10 +79,6 @@ class HybridNetsBackbone(nn.Module):
                 weights='imagenet',
             )
 
-        self.anchors = Anchors(anchor_scale=self.anchor_scale[compound_coef],
-                               pyramid_levels=(torch.arange(self.pyramid_levels[self.compound_coef]) + 3).tolist(),
-                               onnx_export=onnx_export,
-                               **kwargs)
         if onnx_export:
             ## TODO: timm
             self.encoder.set_swish(memory_efficient=False)
@@ -115,12 +107,12 @@ class HybridNetsBackbone(nn.Module):
         segmentation = self.segmentation_head(outputs)
         
         classification = self.classifier(features)
-        anchors = self.anchors(inputs, inputs.dtype)
         
         if not self.onnx_export:
-            return features, classification, anchors, segmentation
+            return features, classification, segmentation
         else:
             return classification, segmentation
+        
     def initialize_decoder(self, module):
         for m in module.modules():
 

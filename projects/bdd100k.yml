@@ -8,18 +8,16 @@ seg_list: ['road', 'line']
 seg_multilabel: false  # a pixel can belong to multiple labels (i.e. lane line + underlying road)
 
 dataset:
-  dataroot: ./datasets/bdd100k/images/100k/
-  labelroot: ./datasets
+  dataroot: ../datasets/bdd100k/images/100k/
+  labelroot: ../datasets
   segroot:
-  - ./datasets/bdd_seg_gt/
-  - ./datasets/bdd_lane_gt/
+  - ../datasets/bdd_seg_gt/
+  - ../datasets/bdd_lane_gt/
   test_set: val
   train_set: train
   org_img_size:
   - 720
   - 1280
-  fliplr: 0.5
-  flipud: 0.0
   hsv_h: 0.015
   hsv_s: 0.7
   hsv_v: 0.4

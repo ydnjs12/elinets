@@ -1,14 +1,9 @@
 import torch.nn as nn
 import torch
-from torchvision.ops.boxes import nms as nms_torch
 import torch.nn.functional as F
 import math
 from functools import partial
 from elinets.loss import FocalLoss, FocalLossSeg, TverskyLoss
-
-
-def nms(dets, thresh):
-    return nms_torch(dets[:, :4], dets[:, 4], thresh)
 
 
 class ModelWithLoss(nn.Module):
@@ -456,18 +451,25 @@ class BiFPNDecoder(nn.Module):
         return x
 
 
-class Classifier(nn.Module):
+class ClassificationHead(nn.Module):
     def __init__(self, in_channels, num_classes, num_layers, pyramid_levels=5, onnx_export=False):
-        super(Classifier, self).__init__()
+        super(ClassificationHead, self).__init__()
         self.num_classes = num_classes
         self.num_layers = num_layers
+        
+        # Repeat Conv-BN-Swish structure at each pyramid level
         self.conv_list = nn.ModuleList(
             [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for i in range(num_layers)])
         self.bn_list = nn.ModuleList(
-            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
-             range(pyramid_levels)])
+            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in range(pyramid_levels)])
         self.header = SeparableConvBlock(in_channels, num_classes, norm=False, activation=False)
         self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
+
+        pool = nn.AdaptiveAvgPool2d(1)
+        flatten = nn.Flatten()
+        dropout = nn.Dropout(p=dropout, inplace=True) if dropout else nn.Identity()
+        linear = nn.Linear(in_channels, classes, bias=True)
+        activation = Activation(activation)
 
     def forward(self, inputs):
         feats = []
@@ -672,19 +674,6 @@ class SegmentationHead(nn.Sequential):
         upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
         activation = Activation(activation)
         super().__init__(conv2d, upsampling, activation)
-
-
-class ClassificationHead(nn.Sequential):
-
-    def __init__(self, in_channels, classes, pooling="avg", dropout=0.2, activation=None):
-        if pooling not in ("max", "avg"):
-            raise ValueError("Pooling should be one of ('max', 'avg'), got {}.".format(pooling))
-        pool = nn.AdaptiveAvgPool2d(1) if pooling == 'avg' else nn.AdaptiveMaxPool2d(1)
-        flatten = nn.Flatten()
-        dropout = nn.Dropout(p=dropout, inplace=True) if dropout else nn.Identity()
-        linear = nn.Linear(in_channels, classes, bias=True)
-        activation = Activation(activation)
-        super().__init__(pool, flatten, dropout, linear, activation)
 
 
 if __name__ == '__main__':

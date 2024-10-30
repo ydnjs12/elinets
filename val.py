@@ -308,7 +308,7 @@ if __name__ == "__main__":
     model.requires_grad_(False)
 
     use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
+    device = "cuda" if use_cuda else "cpu"
 
     if use_cuda:
         model = model.to(device)

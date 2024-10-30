@@ -6,7 +6,6 @@ from typing import Union
 from torch.utils.data import DataLoader
 from prefetch_generator import BackgroundGenerator
 import random
-import itertools
 import yaml
 import argparse
 
@@ -16,7 +15,6 @@ import torch
 from matplotlib import pyplot as plt
 from torch import nn
 from torch.nn.init import _calculate_fan_in_and_fan_out, _no_grad_normal_
-from torchvision.ops.boxes import batched_nms
 from pathlib import Path
 from torch.nn.parallel import DistributedDataParallel
 
@@ -152,7 +150,6 @@ def postprocess(x, classification, threshold, iou_threshold):
         transformed_anchors_per = transformed_anchors[i, scores_over_thresh[i, :], ...]
         scores_per = scores[i, scores_over_thresh[i, :], ...]
         scores_, classes_ = classification_per.max(dim=0)
-        anchors_nms_idx = batched_nms(transformed_anchors_per, scores_per[:, 0], classes_, iou_threshold=iou_threshold)
 
         if anchors_nms_idx.shape[0] != 0:
             classes_ = classes_[anchors_nms_idx]

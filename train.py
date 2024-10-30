@@ -60,8 +60,8 @@ def train(opt):
     params = Params(f'projects/{opt.project}.yml')
 
     use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
-
+    device = "cuda" if use_cuda else "cpu"
+ 
     # if torch.cuda.is_available():
     #     torch.cuda.manual_seed(42)
     # else:
@@ -147,7 +147,7 @@ def train(opt):
                         seg_annot = seg_annot.cuda()
 
                     optimizer.zero_grad(set_to_none=True)
-                    with torch.amp.autocast(device_type=str(device), enabled=opt.amp):
+                    with torch.amp.autocast(device_type=device, enabled=opt.amp):
                         cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot,
                                                                                 label_list=params.label_list)
                         cls_loss = cls_loss.mean()

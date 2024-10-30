@@ -2,8 +2,8 @@ import torch
 from torch import nn
 import timm
 
-from elinets.model import BiFPN, Classifier, BiFPNDecoder
-from elinets.model import SegmentationHead
+from elinets.model import BiFPN, BiFPNDecoder
+from elinets.model import SegmentationHead, ClassificationHead
 
 from encoders import get_encoder
 from utils.constants import *
@@ -62,7 +62,7 @@ class HybridNetsBackbone(nn.Module):
             upsampling=4,
         )
 
-        self.classifier = Classifier(in_channels=self.fpn_num_filters[self.compound_coef],
+        self.classification_head = ClassificationHead(in_channels=self.fpn_num_filters[self.compound_coef],
                                      num_classes=num_classes,
                                      num_layers=self.box_class_repeats[self.compound_coef],
                                      pyramid_levels=self.pyramid_levels[self.compound_coef],
@@ -106,7 +106,7 @@ class HybridNetsBackbone(nn.Module):
 
         segmentation = self.segmentation_head(outputs)
         
-        classification = self.classifier(features)
+        classification = self.classification_head(features)
         
         if not self.onnx_export:
             return features, classification, segmentation

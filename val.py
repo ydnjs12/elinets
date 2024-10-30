@@ -5,7 +5,8 @@ from tqdm.autonotebook import tqdm
 import os
 
 from utils import smp_metrics
-from utils.utils import ConfusionMatrix, postprocess, scale_coords, process_batch, ap_per_class, fitness, \
+from utils.plot import ConfusionMatrix
+from utils.utils import postprocess, ap_per_class, fitness, \
     save_checkpoint, DataLoaderX, boolean_string, Params
 from backbone import HybridNetsBackbone
 from elinets.dataset import BddDataset
@@ -13,11 +14,17 @@ from torchvision import transforms
 import torch.nn.functional as F
 from elinets.model import ModelWithLoss
 from utils.constants import *
+import cv2
 
 
 @torch.no_grad()
 def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
     model.eval()
+    
+    saved_path = f'checkpoints/{opt.project}/'
+    log_path = f'checkpoints/{opt.project}/tensorboard/'
+    os.makedirs(log_path, exist_ok=True)
+    os.makedirs(saved_path, exist_ok=True)
 
     optimizer = kwargs.get('optimizer', None)
     scaler = kwargs.get('scaler', None)
@@ -36,7 +43,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
     names = {i: v for i, v in enumerate(params.label_list)}
     ncs = 1 if seg_mode == BINARY_MODE else len(params.seg_list) + 1
     seen = 0
-    confusion_matrix = ConfusionMatrix(nc=len(names))
+    confusion_matrix = ConfusionMatrix(num_classes=len(params.label_list))
     s_seg = ' ' * (15 + 11 * 8)
     s = ('%-15s' + '%-11s' * 8) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95', 'mIoU', 'mAcc')
     for i in range(len(params.seg_list)):
@@ -66,58 +73,43 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         seg_loss = seg_loss.mean()
 
         if opt.cal_map:
-            out = postprocess(imgs.detach(), classification.detach(), opt.conf_thres)  # 0.5
+            out = postprocess(imgs.detach(), classification.detach(), opt.conf_thres, total_lane)  # 0.5
 
             for i in range(ego_lane.size(0)):
                 seen += 1
                 labels = ego_lane[i]
-                labels = labels[labels[:, 4] != -1]
 
                 ou = out[i]
 
-                pred = np.column_stack([ou['rois'], ou['scores']])
-                pred = np.column_stack([pred, ou['class_ids']])
+                pred = np.column_stack([ou['scores'], ou['class_ids']])
                 pred = torch.from_numpy(pred).cuda()
 
-                target_class = labels[:, 4].tolist() if len(labels) else []  # target class
-
                 if len(pred) == 0:
-                    if len(labels):
+                    if labels:
                         stats.append((torch.zeros(0, num_thresholds, dtype=torch.bool),
-                                      torch.Tensor(), torch.Tensor(), target_class))
+                                      torch.Tensor(), torch.Tensor(), labels))
                     # print("here")
                     continue
 
-                if len(labels):
-                    pred[:, :4] = scale_coords(imgs[i][1:], pred[:, :4], shapes[i][0], shapes[i][1])
-                    labels = scale_coords(imgs[i][1:], labels, shapes[i][0], shapes[i][1])
+                if labels:
                     # ori_img = cv2.imread('datasets/bdd100k_effdet/val/' + filenames[i],
                     #                      cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION | cv2.IMREAD_UNCHANGED)
-                    # for label in labels:
-                    #     x1, y1, x2, y2 = [int(x) for x in label[:4]]
-                    #     ori_img = cv2.rectangle(ori_img, (x1, y1), (x2, y2), (255, 0, 0), 1)
-                    # for pre in pred:
-                    #     x1, y1, x2, y2 = [int(x) for x in pre[:4]]
-                    #     # ori_img = cv2.putText(ori_img, str(pre[4].cpu().numpy()), (x1 - 10, y1 - 10),
-                    #     #                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
-                    #     ori_img = cv2.rectangle(ori_img, (x1, y1), (x2, y2), (0, 255, 0), 1)
-
                     # cv2.imwrite('pre+label-{}.jpg'.format(filenames[i]), ori_img)
-                    correct = process_batch(pred, labels, iou_thresholds)
-                    confusion_matrix.process_batch(pred, labels)
+                    correct = (torch.tensor(pred[:, 1]) == labels.cuda()).unsqueeze(0)
+                    confusion_matrix.update(pred, labels)
                 else:
                     correct = torch.zeros(pred.shape[0], num_thresholds, dtype=torch.bool)
-                stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), target_class))
+                stats.append((correct.cpu(), pred[:, 0].cpu(), pred[:, 1].cpu(), [labels.tolist()]))
 
                 # print(stats)
 
-                # Visualization
+                # # Visualization
                 # seg_0 = segmentation[i]
                 # # print('bbb', seg_0.shape)
                 # seg_0 = torch.argmax(seg_0, dim = 0)
                 # # print('before', seg_0.shape)
                 # seg_0 = seg_0.cpu().numpy()
-                #     #.transpose(1, 2, 0)
+                # #.transpose(1, 2, 0)
                 # # print(seg_0.shape)
                 # anh = np.zeros((384,640,3))
                 # anh[seg_0 == 0] = (255,0,0)
@@ -211,8 +203,8 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
                 print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
 
         # Plots
-        confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
-        confusion_matrix.tp_fp()
+        confusion_matrix.plot(save_dir=save_dir, class_names=list(names.values()))
+        confusion_matrix.tp_fp_fn()
 
         results = (mp, mr, map50, map, iou_score, acc_score, loss)
         fi = fitness(
@@ -228,14 +220,14 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
                     'optimizer': optimizer.state_dict(),
                     'scaler': scaler.state_dict()}
             print("Saving checkpoint with best fitness", fi[0])
-            save_checkpoint(ckpt, opt.saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
+            save_checkpoint(ckpt, saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
     else:
         # if not calculating map, save by best loss
         if is_training and loss + opt.es_min_delta < best_loss:
             best_loss = loss
             best_epoch = epoch
 
-            save_checkpoint(model, opt.saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
+            save_checkpoint(model, saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}_best.pth')
 
     # Early stopping
     if is_training and epoch - best_epoch > opt.es_patience > 0:

@@ -26,7 +26,7 @@ def get_args():
                                                             'https://github.com/rwightman/pytorch-image-models')
     parser.add_argument('-c', '--compound_coef', type=int, default=3, help='Coefficient of efficientnet backbone')
     parser.add_argument('-n', '--num_workers', type=int, default=8, help='Num_workers of dataloader')
-    parser.add_argument('-b', '--batch_size', type=int, default=5, help='Number of images per batch among all devices') #12
+    parser.add_argument('-b', '--batch_size', type=int, default=12, help='Number of images per batch among all devices')
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--optim', type=str, default='adamw', help='Select optimizer for training, '
                                                                    'suggest using \'adamw\' until the'
@@ -42,8 +42,14 @@ def get_args():
     parser.add_argument('-w', '--load_weights', type=str, default=None,
                         help='Whether to load weights from a checkpoint, set None to initialize,'
                              'set \'last\' to load last checkpoint')
+    parser.add_argument('--debug', type=boolean_string, default=False,
+                        help='Whether visualize the predicted boxes of training, '
+                             'the output images will be in test/, '
+                             'and also only use first 500 images.')
     parser.add_argument('--cal_map', type=boolean_string, default=True,
                         help='Calculate mAP in validation')
+    parser.add_argument('-v', '--verbose', type=boolean_string, default=True,
+                        help='Whether to print results per class when valing')
     parser.add_argument('--conf_thres', type=float, default=0.001,
                         help='Confidence threshold in NMS')
     parser.add_argument('--iou_thres', type=float, default=0.6,
@@ -75,7 +81,7 @@ def train(opt):
                                seg_mode=seg_mode)
     
     # wrap the model with loss function, to reduce the memory usage on gpu0 and speedup
-    model = ModelWithLoss(model)
+    model = ModelWithLoss(model, debug=opt.debug)
 
     model = model.to(memory_format=torch.channels_last)
 
@@ -92,7 +98,7 @@ def train(opt):
 
     scaler = torch.amp.GradScaler(device=device, enabled=opt.amp)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 
     training_generator, val_generator = initDataLoader(params, seg_mode=seg_mode)
 
@@ -109,7 +115,8 @@ def train(opt):
             model.load_state_dict(ckpt.get('model', ckpt), strict=False)
         except RuntimeError as e:
             print(f'[Warning] Ignoring {e}')
-            print('[Warning] this might be because you load a pretrained weights with different number of classes. The rest of the weights should be loaded already.')
+            print(
+                '[Warning] Don\'t panic if you see this, this might be because you load a pretrained weights with different number of classes. The rest of the weights should be loaded already.')
     else:
         print('[Info] initializing weights...')
         init_weights(model)
@@ -147,8 +154,9 @@ def train(opt):
                         seg_annot = seg_annot.cuda()
 
                     optimizer.zero_grad(set_to_none=True)
-                    with torch.amp.autocast(device_type=str(device), enabled=opt.amp):
-                        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot,
+                    with torch.amp.autocast(device_type=device, enabled=opt.amp):
+                        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane,
+                                                                                seg_annot,
                                                                                 label_list=params.label_list)
                         cls_loss = cls_loss.mean()
                         seg_loss = seg_loss.mean()
@@ -215,12 +223,13 @@ def initDataLoader(params, seg_mode):
             )
         ]),
         seg_mode=seg_mode,
+        debug=opt.debug
     )
 
     training_generator = DataLoaderX(
         train_dataset,
         batch_size=opt.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=opt.num_workers,
         pin_memory=params.pin_memory,
         collate_fn=BddDataset.collate_fn
@@ -237,12 +246,13 @@ def initDataLoader(params, seg_mode):
             )
         ]),
         seg_mode=seg_mode,
+        debug=opt.debug
     )
 
     val_generator = DataLoaderX(
         valid_dataset,
         batch_size=opt.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=opt.num_workers,
         pin_memory=params.pin_memory,
         collate_fn=BddDataset.collate_fn

@@ -12,19 +12,25 @@ def nms(dets, thresh):
 
 
 class ModelWithLoss(nn.Module):
-    def __init__(self, model):
+    def __init__(self, model, debug=False):
         super().__init__()
         self.model = model
-        self.criterion = FocalLoss(alpha=0.7, gamma=4.0/3)
+        self.criterion = FocalLoss()
         self.seg_criterion1 = TverskyLoss(mode=self.model.seg_mode, alpha=0.7, beta=0.3, gamma=4.0/3, from_logits=True)
         self.seg_criterion2 = FocalLossSeg(mode=self.model.seg_mode, alpha=0.25)
+        self.debug = debug
 
     def forward(self, imgs, annotations, seg_annot, label_list=None):
         _, classification, segmentation = self.model(imgs)
 
-        cls_loss = self.criterion(classification, annotations, imgs=imgs, label_list=label_list)
-        tversky_loss = self.seg_criterion1(segmentation, seg_annot)
-        focal_loss = self.seg_criterion2(segmentation, seg_annot)
+        if self.debug:
+            cls_loss = self.criterion(classification, annotations, imgs=imgs, obj_list=label_list)
+            tversky_loss = self.seg_criterion1(segmentation, seg_annot)
+            focal_loss = self.seg_criterion2(segmentation, seg_annot)
+        else:
+            cls_loss = self.criterion(classification, annotations)
+            tversky_loss = self.seg_criterion1(segmentation, seg_annot)
+            focal_loss = self.seg_criterion2(segmentation, seg_annot)
 
         seg_loss = tversky_loss + 1 * focal_loss
 
@@ -457,8 +463,9 @@ class BiFPNDecoder(nn.Module):
 
 
 class Classifier(nn.Module):
-    def __init__(self, in_channels, num_classes, num_layers, pyramid_levels=5, onnx_export=False):
+    def __init__(self, in_channels, num_anchors, num_classes, num_layers, pyramid_levels=5, onnx_export=False):
         super(Classifier, self).__init__()
+        self.num_anchors = num_anchors
         self.num_classes = num_classes
         self.num_layers = num_layers
         self.conv_list = nn.ModuleList(
@@ -466,7 +473,7 @@ class Classifier(nn.Module):
         self.bn_list = nn.ModuleList(
             [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
              range(pyramid_levels)])
-        self.header = SeparableConvBlock(in_channels, num_classes, norm=False, activation=False)
+        self.header = SeparableConvBlock(in_channels, num_anchors * num_classes, norm=False, activation=False)
         self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
 
     def forward(self, inputs):
@@ -479,7 +486,7 @@ class Classifier(nn.Module):
             feat = self.header(feat)
 
             feat = feat.permute(0, 2, 3, 1)
-            feat = feat.contiguous().view(feat.shape[0], feat.shape[1], feat.shape[2],
+            feat = feat.contiguous().view(feat.shape[0], feat.shape[1], feat.shape[2], self.num_anchors,
                                           self.num_classes)
             feat = feat.contiguous().view(feat.shape[0], -1, self.num_classes)
 

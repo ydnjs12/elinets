@@ -60,16 +60,13 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
             ego_lane = ego_lane.cuda()
             seg_annot = seg_annot.cuda()
 
-        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane,
-                                                                seg_annot,
+        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot,
                                                                 label_list=params.label_list)
         cls_loss = cls_loss.mean()
         seg_loss = seg_loss.mean()
 
         if opt.cal_map:
-            out = postprocess(imgs.detach(),
-                              classification.detach(),
-                              opt.conf_thres, opt.iou_thres)  # 0.5, 0.3
+            out = postprocess(imgs.detach(), classification.detach(), opt.conf_thres)  # 0.5
 
             for i in range(ego_lane.size(0)):
                 seen += 1

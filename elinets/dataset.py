@@ -38,7 +38,7 @@ class BddDataset(Dataset):
         
         indicator = params.dataset['train_set'] if is_train else params.dataset['test_set']
         self.img_root = f"{img_root}/{indicator}"
-        self.label_root = f"{label_root}/drivable_{indicator}_custom_ft.json"
+        self.label_root = f"{label_root}/drivable_{indicator}_custom.json"
         self.seg_root = [f"{root}/{indicator}" for root in seg_root]
 
         self.shapes = np.array(params.dataset['org_img_size'])

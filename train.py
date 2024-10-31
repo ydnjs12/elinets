@@ -202,6 +202,7 @@ def train(opt):
         save_checkpoint(model, saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}.pth')
     finally:
         writer.close()
+        print(f'[Training Finish : {datetime.datetime.now().strftime("%Y%m%d-%H%M%S")} !!] ')
 
 def initDataLoader(params, seg_mode):
     train_dataset = BddDataset(

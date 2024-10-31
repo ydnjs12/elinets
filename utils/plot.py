@@ -3,6 +3,9 @@ import webcolors
 import os
 import uuid
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
 
 STANDARD_COLORS = [
     'LawnGreen', 'Chartreuse', 'Aqua', 'Beige', 'Azure', 'BlanchedAlmond', 'Bisque',
@@ -88,3 +91,78 @@ def display(preds, imgs, obj_list, imshow=True, imwrite=False):
         if imwrite:
             os.makedirs('test/', exist_ok=True)
             cv2.imwrite(f'test/{uuid.uuid4().hex}.jpg', imgs[i])
+
+
+class ConfusionMatrix:
+    def __init__(self, num_classes=6):
+        """
+        Args:
+            num_classes: The total number of lane classes.
+        """
+        self.num_classes = num_classes
+        self.matrix = np.zeros((num_classes, num_classes), dtype=np.int32)  # Square matrix for classification
+
+    def update(self, preds, labels):
+        """
+        Update the confusion matrix given a batch of predictions and labels.
+
+        Args:
+            preds (Array[N, 2]): Predicted lane numbers conf, class.
+            labels (Array[N]): Ground truth lane numbers (from 0 to num_classes-1).
+        """
+        gt_class = labels.int()
+        pred_class = preds[:, 1].int()
+
+        self.matrix[gt_class, pred_class] += 1
+
+
+    def tp_fp_fn(self):
+        """
+        Calculate True Positives (TP), False Positives (FP), and False Negatives (FN) for each class.
+        Returns:
+            tp: True Positives
+            fp: False Positives
+            fn: False Negatives
+        """
+        tp = np.diag(self.matrix)  # True Positives: diagonal elements
+        fp = self.matrix.sum(axis=0) - tp  # False Positives: sum of the column - TP
+        fn = self.matrix.sum(axis=1) - tp  # False Negatives: sum of the row - TP
+
+        return tp, fp, fn
+
+    def plot(self, class_names=None, normalize=False, save_dir=None):
+        """
+        Plot the confusion matrix using Seaborn heatmap.
+
+        Args:
+            class_names (List[str], optional): List of class names to display on axes.
+            normalize (bool): Whether to normalize the confusion matrix by row (true class).
+            save_dir (str, optional): Directory to save the plot. If None, the plot will just be shown.
+        """
+        if normalize:
+            matrix = self.matrix.astype('float') / (self.matrix.sum(axis=1)[:, np.newaxis] + 1e-6)
+            matrix[matrix < 0.005] = np.nan
+        else:
+            matrix = self.matrix
+
+
+        plt.figure(figsize=(10, 8))
+        sns.set(font_scale=1.0 if self.num_classes < 50 else 0.8)
+        sns.heatmap(matrix, annot=True, fmt='.2f' if normalize else 'd', cmap='Blues', square=True,
+                    xticklabels=class_names + ['background FP'],
+                    yticklabels=class_names + ['background FP']).set_facecolor((1, 1, 1))
+
+        plt.xlabel('Predicted Lane')
+        plt.ylabel('True Lane')
+        plt.title('Confusion Matrix')
+
+        if save_dir:
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
+            plt.savefig(Path(save_dir) / 'confusion_matrix.png', dpi=250)
+        # plt.show()
+        plt.close()
+
+    def print(self):
+        """Print the confusion matrix in plain text."""
+        print("Confusion Matrix:")
+        print(self.matrix)

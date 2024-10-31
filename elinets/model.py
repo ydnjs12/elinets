@@ -462,40 +462,40 @@ class BiFPNDecoder(nn.Module):
         return x
 
 
-class Classifier(nn.Module):
-    def __init__(self, in_channels, num_anchors, num_classes, num_layers, pyramid_levels=5, onnx_export=False):
-        super(Classifier, self).__init__()
-        self.num_anchors = num_anchors
+class ClassificationHead(nn.Module):
+    def __init__(self, in_channels, num_classes=6, num_layers=3, pyramid_levels=5, onnx_export=False):
+        super(ClassificationHead, self).__init__()
         self.num_classes = num_classes
         self.num_layers = num_layers
+        
+        # Conv-BN-Activation Block for each pyramid level feature extraction
         self.conv_list = nn.ModuleList(
-            [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for i in range(num_layers)])
+            [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for _ in range(num_layers)])
         self.bn_list = nn.ModuleList(
-            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
+            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for _ in range(num_layers)]) for j in
              range(pyramid_levels)])
-        self.header = SeparableConvBlock(in_channels, num_anchors * num_classes, norm=False, activation=False)
         self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
+
+        # fully connected layer for final classification output
+        self.fc = nn.Linear(in_channels * pyramid_levels, num_classes)
 
     def forward(self, inputs):
         feats = []
         for feat, bn_list in zip(inputs, self.bn_list):
-            for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
+            for bn, conv in zip(bn_list, self.conv_list):
                 feat = conv(feat)
                 feat = bn(feat)
                 feat = self.swish(feat)
-            feat = self.header(feat)
 
-            feat = feat.permute(0, 2, 3, 1)
-            feat = feat.contiguous().view(feat.shape[0], feat.shape[1], feat.shape[2], self.num_anchors,
-                                          self.num_classes)
-            feat = feat.contiguous().view(feat.shape[0], -1, self.num_classes)
-
+            feat = feat.mean(dim=[2, 3]) # Global Average Pooling (batch, in_channels)
             feats.append(feat)
 
-        feats = torch.cat(feats, dim=1)
-        feats = feats.sigmoid()
+        feats = torch.cat(feats, dim=1) # (batch, in_channels * pyramid_levels)
+        
+        out = self.fc(feats)
+        output = out.softmax(dim=1)
 
-        return feats
+        return output
 
 
 class SwishImplementation(torch.autograd.Function):
@@ -679,19 +679,6 @@ class SegmentationHead(nn.Sequential):
         upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
         activation = Activation(activation)
         super().__init__(conv2d, upsampling, activation)
-
-
-class ClassificationHead(nn.Sequential):
-
-    def __init__(self, in_channels, classes, pooling="avg", dropout=0.2, activation=None):
-        if pooling not in ("max", "avg"):
-            raise ValueError("Pooling should be one of ('max', 'avg'), got {}.".format(pooling))
-        pool = nn.AdaptiveAvgPool2d(1) if pooling == 'avg' else nn.AdaptiveMaxPool2d(1)
-        flatten = nn.Flatten()
-        dropout = nn.Dropout(p=dropout, inplace=True) if dropout else nn.Identity()
-        linear = nn.Linear(in_channels, classes, bias=True)
-        activation = Activation(activation)
-        super().__init__(pool, flatten, dropout, linear, activation)
 
 
 if __name__ == '__main__':

@@ -4,28 +4,9 @@ import cv2
 import numpy as np
 from torch.nn.modules.loss import _Loss
 import torch.nn.functional as F
-from utils.utils import postprocess
 from typing import Optional, List
 from functools import partial
-from utils.plot import display
 from utils.constants import *
-
-def calc_iou(a, b):
-    # a(anchor) [boxes, (y1, x1, y2, x2)]
-    # b(gt, coco-style) [boxes, (x1, y1, x2, y2)]
-
-    area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
-    iw = torch.min(torch.unsqueeze(a[:, 3], dim=1), b[:, 2]) - torch.max(torch.unsqueeze(a[:, 1], 1), b[:, 0])
-    ih = torch.min(torch.unsqueeze(a[:, 2], dim=1), b[:, 3]) - torch.max(torch.unsqueeze(a[:, 0], 1), b[:, 1])
-    iw = torch.clamp(iw, min=0)
-    ih = torch.clamp(ih, min=0)
-    ua = torch.unsqueeze((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]), dim=1) + area - iw * ih
-    ua = torch.clamp(ua, min=1e-8)
-    intersection = iw * ih
-    IoU = intersection / ua
-   
-
-    return IoU
 
 
 class FocalLoss(nn.Module):
@@ -40,87 +21,20 @@ class FocalLoss(nn.Module):
 
         for j in range(batch_size):
 
-            classification = classifications[j, :, :]
-
+            classification = classifications[j, :]
             classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
-
-            if torch.cuda.is_available():
-
-                alpha_factor = torch.ones_like(classification) * alpha
-                alpha_factor = alpha_factor.cuda()
-                alpha_factor = 1. - alpha_factor
-                focal_weight = classification
-                focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-                bce = -(torch.log(1.0 - classification))
-
-                cls_loss = focal_weight * bce
-
-                classification_losses.append(cls_loss.sum())
-            else:
-
-                alpha_factor = torch.ones_like(classification) * alpha
-                alpha_factor = 1. - alpha_factor
-                focal_weight = classification
-                focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-                bce = -(torch.log(1.0 - classification))
-
-                cls_loss = focal_weight * bce
-
-                classification_losses.append(cls_loss.sum())
-
-                continue
-
-            # compute the loss for classification
-            #targets = torch.ones_like(classification) * -1
-            targets = torch.zeros_like(classification)
             
-            if torch.cuda.is_available():
-                targets = targets.cuda()
+            # Get ground truth label (integer encoding)
+            gt_label = annotations[j].long() - 1
             
-            assigned_annotations = bbox_annotation[IoU_argmax, :]
+            alpha_factor = torch.ones_like(classification) * alpha
+            alpha_factor[gt_label] = 1 - alpha
+            focal_weight = (1 - classification[gt_label]) ** gamma 
             
-            positive_indices = torch.full_like(IoU_max,False,dtype=torch.bool) #torch.ge(IoU_max, 0.2) 
-                        
-            smooth_region = (assigned_annotations[:, 2] - assigned_annotations[:, 0]) * (assigned_annotations[:, 3] - assigned_annotations[:, 1]) > 10 * 10
+            cls_loss = F.cross_entropy(classification.unsqueeze(0), gt_label.unsqueeze(0), reduction='none')
+            cls_loss *= alpha_factor[gt_label] * focal_weight
 
-            positive_indices[torch.logical_or(torch.logical_and(smooth_region,IoU_max >= 0.5),torch.logical_and(~smooth_region,IoU_max >= 0.15))] = True
-
-            num_positive_anchors = positive_indices.sum()
-           
-            targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1
-    
-            alpha_factor = torch.ones_like(targets) * alpha
-            if torch.cuda.is_available():
-                alpha_factor = alpha_factor.cuda()
-
-            alpha_factor = torch.where(torch.eq(targets, 1.), alpha_factor, 1. - alpha_factor)
-            focal_weight = torch.where(torch.eq(targets, 1.), 1. - classification, classification)
-            focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-            bce = -(targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
-
-            cls_loss = focal_weight * bce
-
-            zeros = torch.zeros_like(cls_loss)
-            if torch.cuda.is_available():
-                zeros = zeros.cuda()
-            cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, zeros)
-
-            classification_losses.append(cls_loss.sum() / torch.clamp(num_positive_anchors.to(dtype), min=1.0))
-
-        # debug
-        imgs = kwargs.get('imgs', None)
-        if imgs is not None:
-            obj_list = kwargs.get('label_list', None)
-            out = postprocess(imgs.detach(),
-                              torch.stack(imgs.shape[0], 0).detach(), classifications.detach(),
-                              0.25, 0.3)
-            imgs = imgs.permute(0, 2, 3, 1).cpu().numpy()
-            imgs = ((imgs * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]) * 255).astype(np.uint8)
-            imgs = [cv2.cvtColor(img, cv2.COLOR_RGB2BGR) for img in imgs]
-            display(out, imgs, obj_list, imshow=False, imwrite=True)
+            classification_losses.append(cls_loss)
 
         return torch.stack(classification_losses).mean(dim=0, keepdim=True)
 

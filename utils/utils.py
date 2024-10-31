@@ -6,7 +6,6 @@ from typing import Union
 from torch.utils.data import DataLoader
 from prefetch_generator import BackgroundGenerator
 import random
-import itertools
 import yaml
 import argparse
 
@@ -16,7 +15,6 @@ import torch
 from matplotlib import pyplot as plt
 from torch import nn
 from torch.nn.init import _calculate_fan_in_and_fan_out, _no_grad_normal_
-from torchvision.ops.boxes import batched_nms
 from pathlib import Path
 from torch.nn.parallel import DistributedDataParallel
 
@@ -135,42 +133,16 @@ def preprocess_video(*frame_from_video, max_size=512, mean=(0.406, 0.456, 0.485)
     return ori_imgs, framed_imgs, framed_metas
 
 
-def postprocess(x, anchors, classification, threshold, iou_threshold):
-    transformed_anchors = clipBoxes(transformed_anchors, x)
-    scores = torch.max(classification, dim=2, keepdim=True)[0]
-    scores_over_thresh = (scores > threshold)[:, :, 0]
+def postprocess(x, classification, threshold, total_lane):
     out = []
     for i in range(x.shape[0]):
-        if scores_over_thresh[i].sum() == 0:
-            out.append({
-                'rois': np.array(()),
-                'class_ids': np.array(()),
-                'scores': np.array(()),
-            })
-            continue
-
-        classification_per = classification[i, scores_over_thresh[i, :], ...].permute(1, 0)
-        transformed_anchors_per = transformed_anchors[i, scores_over_thresh[i, :], ...]
-        scores_per = scores[i, scores_over_thresh[i, :], ...]
-        scores_, classes_ = classification_per.max(dim=0)
-        anchors_nms_idx = batched_nms(transformed_anchors_per, scores_per[:, 0], classes_, iou_threshold=iou_threshold)
-
-        if anchors_nms_idx.shape[0] != 0:
-            classes_ = classes_[anchors_nms_idx]
-            scores_ = scores_[anchors_nms_idx]
-            boxes_ = transformed_anchors_per[anchors_nms_idx, :]
-
-            out.append({
-                'rois': boxes_.cpu().numpy(),
-                'class_ids': classes_.cpu().numpy(),
-                'scores': scores_.cpu().numpy(),
-            })
-        else:
-            out.append({
-                'rois': np.array(()),
-                'class_ids': np.array(()),
-                'scores': np.array(()),
-            })
+        condition = torch.tensor([classification[i][classif] for classif in range(total_lane[i])])
+        scores, class_ids = torch.max(condition, dim=0)
+        
+        out.append({
+            'class_ids': class_ids.unsqueeze(0).cpu().numpy()+1,
+            'scores': scores.unsqueeze(0).cpu().numpy(),
+        })
 
     return out
 
@@ -231,35 +203,29 @@ def restricted_float(x):
 
 
 # --------------------------EVAL UTILS---------------------------
-def process_batch(detections, labels, iou_thresholds):
+def process_batch(detections, labels, total_lane):
     """
-    Return correct predictions matrix. Both sets of boxes are in (x1, y1, x2, y2) format.
+    Return correct predictions matrix.
     Arguments:
-        detections (Array[N, 6]), x1, y1, x2, y2, conf, class
-
-        labels (Array[M, 5]), class, x1, y1, x2, y2
-        iou_thresholds: list iou thresholds from 0.5 -> 0.95
+        detections (Array[N, 6])
+        labels (Array[M, 1])
     Returns:
-        correct (Array[N, 10]), for 10 IoU levels
+        correct (Array[N, 1])
     """
+    print(detections)
+    print(labels)
+    print(total_lane)
     labels = labels.to(detections.device)
-    # print("ASDA", detections[:, 5].shape)
-    # print("SADASD", labels[:, 4].shape)
-    correct = torch.zeros(detections.shape[0], iou_thresholds.shape[0], dtype=torch.bool, device=iou_thresholds.device)
-    iou = box_iou(labels[:, :4], detections[:, :4])
-    # print(labels[:, 4], detections[:, 5])
-    x = torch.where((iou >= iou_thresholds[0]) & (labels[:, 4:5] == detections[:, 5]))
-    # abc = detections[:,5].unsqueeze(1)
-    # print(labels[:, 4] == abc)
-    # exit()
+    correct = torch.zeros(detections.shape[0], labels.shape[0], dtype=torch.bool, device=detections.device)
+
     if x[0].shape[0]:
         # [label, detection, iou]
-        matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy()
+        matches = torch.cat((torch.stack(x, 1)), 1).cpu().numpy()
         if x[0].shape[0] > 1:
             matches = matches[matches[:, 2].argsort()[::-1]]
             matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
             matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
-        matches = torch.Tensor(matches).to(iou_thresholds.device)
+        matches = torch.Tensor(matches).to(detections.device)
         correct[matches[:, 1].long()] = matches[:, 2:3] >= iou_thresholds
 
     return correct
@@ -299,36 +265,6 @@ def xywh2xyxy(x):
     y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
     y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
     return y
-
-
-def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
-    if len(coords) == 0:
-        return []
-    # Rescale coords (xyxy) from img1_shape to img0_shape
-    if ratio_pad is None:  # calculate from img0_shape
-        gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])  # gain  = old / new
-        pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding
-    else:
-        gain = ratio_pad[0][0]
-        pad = ratio_pad[1]
-
-    coords[:, [0, 2]] -= pad[0]  # x padding
-    coords[:, [1, 3]] -= pad[1]  # y padding
-    coords[:, :4] /= gain
-    clip_coords(coords, img0_shape)
-    return coords
-
-
-def clip_coords(boxes, shape):
-    # Clip bounding xyxy bounding boxes to image shape (height, width)
-    if isinstance(boxes, torch.Tensor):  # faster individually
-        boxes[:, 0].clamp_(0, shape[1])  # x1
-        boxes[:, 1].clamp_(0, shape[0])  # y1
-        boxes[:, 2].clamp_(0, shape[1])  # x2
-        boxes[:, 3].clamp_(0, shape[0])  # y2
-    else:  # np.array (faster grouped)
-        boxes[:, [0, 2]] = boxes[:, [0, 2]].clip(0, shape[1])  # x1, x2
-        boxes[:, [1, 3]] = boxes[:, [1, 3]].clip(0, shape[0])  # y1, y2
 
 
 def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='precision-recall_curve.png', names=[]):

@@ -9,7 +9,7 @@ from encoders import get_encoder
 from utils.constants import *
 
 class HybridNetsBackbone(nn.Module):
-    def __init__(self, num_classes=80, compound_coef=0, seg_classes=1, backbone_name=None, seg_mode=MULTICLASS_MODE, onnx_export=False, **kwargs):
+    def __init__(self, num_classes=10, compound_coef=0, seg_classes=1, backbone_name=None, seg_mode=MULTICLASS_MODE, onnx_export=False, **kwargs):
         super(HybridNetsBackbone, self).__init__()
         self.compound_coef = compound_coef
 
@@ -35,7 +35,6 @@ class HybridNetsBackbone(nn.Module):
         }
 
         self.onnx_export = onnx_export
-        num_anchors = len(self.aspect_ratios) * self.num_scales
 
         self.bifpn = nn.Sequential(
             *[BiFPN(self.fpn_num_filters[self.compound_coef],
@@ -76,10 +75,6 @@ class HybridNetsBackbone(nn.Module):
                 weights='imagenet',
             )
 
-        self.anchors = Anchors(anchor_scale=self.anchor_scale[compound_coef],
-                               pyramid_levels=(torch.arange(self.pyramid_levels[self.compound_coef]) + 3).tolist(),
-                               onnx_export=onnx_export,
-                               **kwargs)
         if onnx_export:
             ## TODO: timm
             self.encoder.set_swish(memory_efficient=False)
@@ -110,9 +105,10 @@ class HybridNetsBackbone(nn.Module):
         segmentation = self.segmentation_head(outputs)
         
         if not self.onnx_export:
-            return features, classification, anchors, segmentation
+            return features, classification, segmentation
         else:
             return classification, segmentation
+        
     def initialize_decoder(self, module):
         for m in module.modules():
 

@@ -24,10 +24,8 @@ parser.add_argument('--source', type=str, default='demo/image', help='The demo i
 parser.add_argument('--output', type=str, default='demo_result', help='Output folder')
 parser.add_argument('-w', '--load_weights', type=str, default='weights/hybridnets.pth')
 parser.add_argument('--conf_thresh', type=restricted_float, default='0.25')
-parser.add_argument('--iou_thresh', type=restricted_float, default='0.3')
 parser.add_argument('--imshow', type=boolean_string, default=False, help="Show result onscreen (unusable on colab, jupyter...)")
 parser.add_argument('--imwrite', type=boolean_string, default=True, help="Write result to output folder")
-parser.add_argument('--show_det', type=boolean_string, default=False, help="Output detection result exclusively")
 parser.add_argument('--show_seg', type=boolean_string, default=False, help="Output segmentation result exclusively")
 parser.add_argument('--cuda', type=boolean_string, default=True)
 parser.add_argument('--float16', type=boolean_string, default=True, help="Use float16 for faster inference")
@@ -52,16 +50,11 @@ img_path = glob(f'{source}/*.jpg') + glob(f'{source}/*.png')
 # img_path = [img_path[0]]  # demo with 1 image
 input_imgs = []
 shapes = []
-det_only_imgs = []
 
-anchors_ratios = params.anchors_ratios
-anchors_scales = params.anchors_scales
 
 threshold = args.conf_thresh
-iou_threshold = args.iou_thresh
 imshow = args.imshow
 imwrite = args.imwrite
-show_det = args.show_det
 show_seg = args.show_seg
 os.makedirs(output, exist_ok=True)
 
@@ -70,7 +63,7 @@ use_float16 = args.float16
 cudnn.fastest = True
 cudnn.benchmark = True
 
-obj_list = params.obj_list
+label_list = params.label_list
 seg_list = params.seg_list
 
 color_list = standard_to_bgr(STANDARD_COLORS)
@@ -120,7 +113,7 @@ else:
     else:
         seg_mode = MULTICLASS_MODE
 print("DETECTED SEGMENTATION MODE FROM WEIGHT AND PROJECT FILE:", seg_mode)
-model = HybridNetsBackbone(compound_coef=compound_coef, num_classes=len(obj_list), seg_classes=len(seg_list), backbone_name=args.backbone,
+model = HybridNetsBackbone(compound_coef=compound_coef, num_classes=len(label_list), seg_classes=len(seg_list), backbone_name=args.backbone,
                            seg_mode=seg_mode)
 model.load_state_dict(weight)
 
@@ -177,23 +170,17 @@ with torch.no_grad():
             if show_seg or seg_mode == MULTILABEL_MODE:
                 cv2.imwrite(seg_filename, cv2.cvtColor(seg_img, cv2.COLOR_RGB2BGR))
 
-    out = postprocess(x, anchors, classification,
-                      threshold, iou_threshold)
+    out = postprocess(x, classification, threshold)git lfs install
+git: 'lfs' is not a git command. See 'git --help'.
+
+The most similar command is
+        log
 
     for i in range(len(ori_imgs)):
         out[i]['rois'] = scale_coords(ori_imgs[i][:2], out[i]['rois'], shapes[i][0], shapes[i][1])
         for j in range(len(out[i]['rois'])):
-            x1, y1, x2, y2 = out[i]['rois'][j].astype(int)
-            obj = obj_list[out[i]['class_ids'][j]]
+            obj = label_list[out[i]['class_ids'][j]]
             score = float(out[i]['scores'][j])
-            plot_one_box(ori_imgs[i], [x1, y1, x2, y2], label=obj, score=score,
-                         color=color_list[get_index_label(obj, obj_list)])
-            if show_det:
-                plot_one_box(det_only_imgs[i], [x1, y1, x2, y2], label=obj, score=score,
-                             color=color_list[get_index_label(obj, obj_list)])
-
-        if show_det:
-            cv2.imwrite(f'{output}/{i}_det.jpg',  cv2.cvtColor(det_only_imgs[i], cv2.COLOR_RGB2BGR))
 
         if imshow:
             cv2.imshow('img', ori_imgs[i])
@@ -212,10 +199,9 @@ with torch.no_grad():
     x.unsqueeze_(0)
     t1 = time.time()
     for _ in range(10):
-        _, classification, anchors, segmentation = model(x)
+        _, classification, segmentation = model(x)
 
-        out = postprocess(x, anchors, classification,
-                          threshold, iou_threshold)
+        out = postprocess(x, classification, threshold)
 
     t2 = time.time()
     tact_time = (t2 - t1) / 10

@@ -10,14 +10,12 @@ from utils.constants import *
 
 
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0):
+    def __init__(self):
         super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
 
     def forward(self, classifications, annotations, **kwargs):
-        alpha = self.alpha
-        gamma = self.gamma
+        alpha = 0.25
+        gamma = 2.0
         batch_size = classifications.shape[0]
         classification_losses = []
 

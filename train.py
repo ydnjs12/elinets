@@ -130,20 +130,15 @@ def train(opt):
 
             for iter, data in enumerate(progress_bar):
                 try:
-                    imgs = data['img']
+                    imgs = data['img'].to(device=device, memory_format=torch.channels_last)
                     total_lane = data['totalLane']
-                    ego_lane = data['egoLane']
-                    seg_annot = data['segmentation']
-
-                    if torch.cuda.device_count() > 0:
-                        imgs = imgs.to(device=device, memory_format=torch.channels_last)
-                        ego_lane = ego_lane.cuda()
-                        seg_annot = seg_annot.cuda()
+                    ego_lane = data['egoLane'].cuda()
+                    seg_annot = data['segmentation'].cuda()
 
                     optimizer.zero_grad(set_to_none=True)
                     with torch.amp.autocast(device_type=device, enabled=opt.amp):
-                        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot,
-                                                                                label_list=params.label_list)
+                        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot, label_list=params.label_list)
+                        
                         cls_loss = cls_loss.mean()
                         seg_loss = seg_loss.mean()
 

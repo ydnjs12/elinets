@@ -44,10 +44,6 @@ def get_args():
                              'set \'last\' to load last checkpoint')
     parser.add_argument('--cal_map', type=boolean_string, default=True,
                         help='Calculate mAP in validation')
-    parser.add_argument('--conf_thres', type=float, default=0.001,
-                        help='Confidence threshold in NMS')
-    parser.add_argument('--iou_thres', type=float, default=0.6,
-                        help='IoU threshold in NMS')
     parser.add_argument('--amp', type=boolean_string, default=False,
                         help='Automatic Mixed Precision training')
 
@@ -61,12 +57,12 @@ def train(opt):
 
     use_cuda = torch.cuda.is_available()
     device = "cuda" if use_cuda else "cpu"
- 
-    # if torch.cuda.is_available():
-    #     torch.cuda.manual_seed(42)
-    # else:
-    #     torch.manual_seed(42)
-
+    
+    np.random.seed(42)
+    torch.manual_seed(42)
+    if use_cuda:
+        torch.cuda.manual_seed_all(42)
+        
     # ====== Model Initialization ======
     seg_mode = MULTILABEL_MODE if params.seg_multilabel else MULTICLASS_MODE if len(params.seg_list) > 1 else BINARY_MODE
 
@@ -90,7 +86,7 @@ def train(opt):
     else:
         optimizer = torch.optim.SGD(model.parameters(), opt.lr, momentum=0.9, nesterov=True)
 
-    scaler = torch.amp.GradScaler(device=device, enabled=opt.amp)
+    scaler = torch.amp.GradScaler(enabled=opt.amp)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
@@ -171,8 +167,7 @@ def train(opt):
 
                     progress_bar.set_description(
                         'Step: {}. Epoch: {}/{}. Iteration: {}/{}. Cls loss: {:.5f}. Seg loss: {:.5f}. Total loss: {:.5f}'.format(
-                            step, epoch, opt.num_epochs, iter + 1, num_iter_per_epoch, cls_loss.item(),
-                            seg_loss.item(), loss.item()))
+                            step, epoch, opt.num_epochs, iter + 1, num_iter_per_epoch, cls_loss.item(), seg_loss.item(), loss.item()))
                     writer.add_scalars('Loss', {'train': loss}, step)
                     writer.add_scalars('Classfication_loss', {'train': cls_loss}, step)
                     writer.add_scalars('Segmentation_loss', {'train': seg_loss}, step)
@@ -215,8 +210,7 @@ def initDataLoader(params, seg_mode):
                 mean=params.mean, std=params.std
             )
         ]),
-        seg_mode=seg_mode,
-        debug=opt.debug
+        seg_mode=seg_mode
     )
 
     training_generator = DataLoaderX(
@@ -238,8 +232,7 @@ def initDataLoader(params, seg_mode):
                 mean=params.mean, std=params.std
             )
         ]),
-        seg_mode=seg_mode,
-        debug=opt.debug
+        seg_mode=seg_mode
     )
 
     val_generator = DataLoaderX(

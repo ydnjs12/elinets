@@ -40,22 +40,29 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
 
     loss_classification_ls = []
     loss_segmentation_ls = []
+    iou_ls = [[] for _ in range(len(params.seg_list))]
+    acc_ls = [[] for _ in range(len(params.seg_list))]
+    miou_ls = []
+    
+    precision_ls = []
+    recall_ls = []
+    f1_ls = []
+    accuracy_ls = []
+
     stats = torch.empty(0, dtype=torch.float32, device=device)
-    ap, ap_class = [], []
+    ap_class = []
     iou_thresholds = torch.linspace(0.5, 0.95, 10).cuda()  # iou vector for mAP@0.5:0.95
     num_thresholds = iou_thresholds.numel()
     names = {i: v for i, v in enumerate(params.label_list)}
-    ncs = 1 if seg_mode == BINARY_MODE else len(params.seg_list) + 1
     seen = 0
     confusion_matrix = ConfusionMatrix(num_classes=len(params.label_list))
-    s_seg = ' ' * (15 + 11 * 8)
-    s = ('%-15s' + '%-11s' * 8) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95', 'mIoU', 'mAcc')
+    s_seg = ' ' * (15 + 11 * 6)
+    s = ('%-15s' + '%-11s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mIoU', 'mAcc')
     for i in range(len(params.seg_list)):
         s_seg += '%-33s' % params.seg_list[i]
         s += ('%-11s' * 3) % ('mIoU', 'IoU', 'Acc')
-    p, r, f1, mp, mr, map50, map = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    iou_ls = [[] for _ in range(ncs)]
-    acc_ls = [[] for _ in range(ncs)]
+    p, r, f1, mp, mr = 0.0, 0.0, 0.0, 0.0, 0.0
+    
 
     val_loader = tqdm(val_generator, ascii=True)
     for iter, data in enumerate(val_loader):
@@ -63,76 +70,63 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         total_lane = data['totalLane'].cuda()
         ego_lane = data['egoLane'].cuda()
         seg_annot = data['segmentation'].cuda()
-        filenames = data['filenames']
-        shapes = data['shapes']
 
         with torch.amp.autocast(device_type=device, enabled=opt.amp):
             cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot, label_list=params.label_list)
         
         cls_loss = cls_loss.mean()
         seg_loss = seg_loss.mean()
-
-        if opt.cal_map:
-            out = postprocess(imgs.detach(), classification.detach(), opt.conf_thres, total_lane)  # 0.5
-
-            for i in range(ego_lane.size(0)):
-                seen += 1
-                labels = ego_lane[i]
-
-                ou = out[i]
-
-                pred = np.column_stack([ou['scores'], ou['class_ids']])
-                pred = torch.from_numpy(pred).cuda()
-                labels = labels.cuda() 
-
-                if len(pred) == 0:
-                    if labels:
-                        stats.append((torch.zeros(0, num_thresholds, dtype=torch.bool), torch.Tensor(), torch.Tensor(), labels))
-                    continue
-
-                if labels:
-                    correct = (torch.tensor(pred[:, 1]) == labels.cuda()).unsqueeze(0)
-                    confusion_matrix.update(pred, labels)
-                else:
-                    correct = torch.zeros(pred.shape[0], num_thresholds, dtype=torch.bool)
-                stats.append((correct.cpu(), pred[:, 0].cpu(), pred[:, 1].cpu(), [labels.tolist()]))
-
-                # # Visualization
-                # seg_0 = segmentation[i]
-                # # print('bbb', seg_0.shape)
-                # seg_0 = torch.argmax(seg_0, dim = 0)
-                # # print('before', seg_0.shape)
-                # seg_0 = seg_0.cpu().numpy()
-                # #.transpose(1, 2, 0)
-                # # print(seg_0.shape)
-                # anh = np.zeros((384,640,3))
-                # anh[seg_0 == 0] = (255,0,0)
-                # anh[seg_0 == 1] = (0,255,0)
-                # anh[seg_0 == 2] = (0,0,255)
-                # anh = np.uint8(anh)
-                # cv2.imwrite('segmentation-{}.jpg'.format(filenames[i]),anh)         
-            if seg_mode == MULTICLASS_MODE:
-                segmentation = segmentation.log_softmax(dim=1).exp()
-                _, segmentation = torch.max(segmentation, 1)  # (bs, C, H, W) -> (bs, H, W)
-            else:
-                segmentation = F.logsigmoid(segmentation).exp()
-
-            tp_seg, fp_seg, fn_seg, tn_seg = smp_metrics.get_stats(segmentation, seg_annot, mode=seg_mode,
-                                                                   threshold=0.5 if seg_mode != MULTICLASS_MODE else None,
-                                                                   num_classes=ncs if seg_mode == MULTICLASS_MODE else None)
-            iou = smp_metrics.iou_score(tp_seg, fp_seg, fn_seg, tn_seg, reduction='none')
-            acc = smp_metrics.balanced_accuracy(tp_seg, fp_seg, fn_seg, tn_seg, reduction='none')
-
-            for i in range(ncs):
-                iou_ls[i].append(iou.T[i].detach().cpu().numpy())
-                acc_ls[i].append(acc.T[i].detach().cpu().numpy())
-
+        
         loss = cls_loss + seg_loss
         if loss == 0 or not torch.isfinite(loss):
             continue
 
         loss_classification_ls.append(cls_loss.item())
         loss_segmentation_ls.append(seg_loss.item())
+
+        # Segmentation Metrics
+        if seg_mode == MULTICLASS_MODE:
+            segmentation = segmentation.log_softmax(dim=1).exp()
+            _, segmentation = torch.max(segmentation, 1)  # (bs, C, H, W) -> (bs, H, W)
+        else:
+            segmentation = F.logsigmoid(segmentation).exp()
+
+        tp_seg, fp_seg, fn_seg, tn_seg = smp_metrics.get_stats(segmentation, seg_annot, mode=seg_mode,
+                                                                threshold=0.5 if seg_mode != MULTICLASS_MODE else None,
+                                                                num_classes=len(params.seg_list) if seg_mode == MULTICLASS_MODE else None)
+        iou = smp_metrics.iou_score(tp_seg, fp_seg, fn_seg, tn_seg, reduction='none')
+        acc = smp_metrics.balanced_accuracy(tp_seg, fp_seg, fn_seg, tn_seg, reduction='none')
+        
+        for i in range(len(params.seg_list)):
+            iou_ls[i].append(iou.T[i].detach().cpu().numpy())
+            acc_ls[i].append(acc.T[i].detach().cpu().numpy())
+        
+        # Classification Metrics
+        out = postprocess(imgs.detach(), classification.detach(), opt.conf_thres, total_lane)  # 0.5
+
+        for i in range(ego_lane.size(0)):
+            print(ego_lane.size(0))
+            seen += 1
+            labels = ego_lane[i]
+
+            ou = out[i]
+
+            pred = np.column_stack([ou['scores'], ou['class_ids']])
+            pred = torch.from_numpy(pred).cuda()
+            labels = labels.cuda() 
+
+            if len(pred) == 0:
+                if labels:
+                    stats.append((torch.zeros(0, num_thresholds, dtype=torch.bool), torch.Tensor(), torch.Tensor(), labels))
+                continue
+
+            if labels:
+                correct = (torch.tensor(pred[:, 1]) == labels.cuda()).unsqueeze(0)
+                confusion_matrix.update(pred, labels)
+            else:
+                correct = torch.zeros(pred.shape[0], num_thresholds, dtype=torch.bool)
+            stats.append((correct.cpu(), pred[:, 0].cpu(), pred[:, 1].cpu(), [labels.tolist()]))
+    
 
     cls_loss = np.mean(loss_classification_ls)
     seg_loss = np.mean(loss_segmentation_ls)
@@ -146,13 +140,12 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         writer.add_scalars('Segmentation_loss', {'val': seg_loss}, step)
 
     if opt.cal_map:
-        for i in range(ncs):
+        for i in range(len(params.seg_list)):
             iou_ls[i] = np.concatenate(iou_ls[i])
             acc_ls[i] = np.concatenate(acc_ls[i])
         iou_score = np.mean(iou_ls)
         acc_score = np.mean(acc_ls)
 
-        miou_ls = []
         for i in range(len(params.seg_list)):
             if seg_mode == BINARY_MODE:
                 # typically this runs once with i == 0
@@ -160,22 +153,16 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
             else:
                 miou_ls.append(np.mean((iou_ls[0] + iou_ls[i+1]) / 2))
 
-        for i in range(ncs):
-            iou_ls[i] = np.mean(iou_ls[i])
-            acc_ls[i] = np.mean(acc_ls[i])
-
         # Compute statistics
         stats = [np.concatenate(x, 0) for x in zip(*stats)]
 
-        ap50 = None
         save_dir = 'plots'
         os.makedirs(save_dir, exist_ok=True)
 
         # Compute metrics
         if len(stats) and stats[0].any():
             p, r, f1, ap, ap_class = ap_per_class(*stats, plot=True, save_dir=save_dir, names=names)
-            ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
-            mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
+            mp, mr = p.mean(), r.mean()
             nt = np.bincount(stats[3].astype(np.int64), minlength=1)  # number of targets per class
         else:
             nt = torch.zeros(1)
@@ -183,7 +170,7 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
         # Print results
         print(s_seg)
         print(s)
-        pf = ('%-15s' + '%-11i' * 2 + '%-11.3g' * 6) % ('all', seen, nt.sum(), mp, mr, map50, map, iou_score, acc_score)
+        pf = ('%-15s' + '%-11i' * 2 + '%-11.3g' * 4) % ('all', seen, nt.sum(), mp, mr, iou_score, acc_score)
         for i in range(len(params.seg_list)):
             tmp = i+1 if seg_mode != BINARY_MODE else i
             pf += ('%-11.3g' * 3) % (miou_ls[i], iou_ls[tmp], acc_ls[tmp])
@@ -191,16 +178,16 @@ def val(model, val_generator, params, opt, seg_mode, is_training, **kwargs):
 
         # Print results per class
         if len(names) > 1 and len(stats):
-            pf = '%-15s' + '%-11i' * 2 + '%-11.3g' * 4
+            pf = '%-15s' + '%-11i' * 2 + '%-11.3g' * 2
             for i, c in enumerate(ap_class):
-                print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+                print(pf % (names[c], seen, nt[c], p[i], r[i]))
 
         # Plots
         confusion_matrix.plot(save_dir=save_dir, class_names=list(names.values()))
         confusion_matrix.tp_fp_fn()
 
-        results = (mp, mr, map50, map, iou_score, acc_score, loss)
-        fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95, iou, acc, loss ]
+        results = (mp, mr, iou_score, acc_score, loss)
+        fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, iou, acc, loss ]
 
         # if calculating map, save by best fitness
         if is_training and fi > best_fitness:
@@ -239,7 +226,6 @@ if __name__ == "__main__":
     ap.add_argument('-w', '--weights', type=str, default='weights/hybridnets.pth', help='/path/to/weights')
     ap.add_argument('-n', '--num_workers', type=int, default=12, help='Num_workers of dataloader')
     ap.add_argument('--batch_size', type=int, default=12, help='The number of images per batch among all devices')
-    ap.add_argument('--cal_map', type=boolean_string, default=True, help='Calculate mAP in validation')
     ap.add_argument('--conf_thres', type=float, default=0.001, help='Confidence threshold in NMS')
     args = ap.parse_args()
 

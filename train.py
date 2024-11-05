@@ -42,8 +42,6 @@ def get_args():
     parser.add_argument('-w', '--load_weights', type=str, default=None,
                         help='Whether to load weights from a checkpoint, set None to initialize,'
                              'set \'last\' to load last checkpoint')
-    parser.add_argument('--cal_map', type=boolean_string, default=True,
-                        help='Calculate mAP in validation')
     parser.add_argument('--amp', type=boolean_string, default=False,
                         help='Automatic Mixed Precision training')
 

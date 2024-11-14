@@ -2,7 +2,7 @@ import argparse
 import datetime
 import os
 import traceback
-
+os.environ["CUDA_VISIBLE_DEVICES"]= "0"
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
@@ -13,7 +13,7 @@ from tqdm.autonotebook import tqdm
 from val import val
 from backbone import HybridNetsBackbone
 from utils.utils import get_last_weights, init_weights, boolean_string, \
-    save_checkpoint, DataLoaderX, Params
+    save_checkpoint, DataLoaderX, Params, postprocess
 from elinets.dataset import BddDataset
 from elinets.model import ModelWithLoss
 from utils.constants import *
@@ -25,13 +25,15 @@ def get_args():
     parser.add_argument('-bb', '--backbone', type=str, help='Use timm to create another backbone replacing efficientnet. '
                                                             'https://github.com/rwightman/pytorch-image-models')
     parser.add_argument('-c', '--compound_coef', type=int, default=3, help='Coefficient of efficientnet backbone')
-    parser.add_argument('-n', '--num_workers', type=int, default=8, help='Num_workers of dataloader')
-    parser.add_argument('-b', '--batch_size', type=int, default=12, help='Number of images per batch among all devices')
+    parser.add_argument('-n', '--num_workers', type=int, default=12, help='Num_workers of dataloader') #8
+    parser.add_argument('-b', '--batch_size', type=int, default=12, help='Number of images per batch among all devices') #12
+    parser.add_argument('--freeze_seg', type=boolean_string, default=False, help='Freeze segmentation head')
+    parser.add_argument('--freeze_cla', type=boolean_string, default=False, help='Freeze classification head')
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--optim', type=str, default='adamw', help='Select optimizer for training, '
                                                                    'suggest using \'adamw\' until the'
                                                                    ' very final stage then switch to \'sgd\'')
-    parser.add_argument('--num_epochs', type=int, default=500)
+    parser.add_argument('--num_epochs', type=int, default=200)
     parser.add_argument('--val_interval', type=int, default=1, help='Number of epoches between valing phases')
     parser.add_argument('--save_interval', type=int, default=500, help='Number of steps between saving')
     parser.add_argument('--es_min_delta', type=float, default=0.0,
@@ -42,18 +44,6 @@ def get_args():
     parser.add_argument('-w', '--load_weights', type=str, default=None,
                         help='Whether to load weights from a checkpoint, set None to initialize,'
                              'set \'last\' to load last checkpoint')
-    parser.add_argument('--debug', type=boolean_string, default=False,
-                        help='Whether visualize the predicted boxes of training, '
-                             'the output images will be in test/, '
-                             'and also only use first 500 images.')
-    parser.add_argument('--cal_map', type=boolean_string, default=True,
-                        help='Calculate mAP in validation')
-    parser.add_argument('-v', '--verbose', type=boolean_string, default=True,
-                        help='Whether to print results per class when valing')
-    parser.add_argument('--conf_thres', type=float, default=0.001,
-                        help='Confidence threshold in NMS')
-    parser.add_argument('--iou_thres', type=float, default=0.6,
-                        help='IoU threshold in NMS')
     parser.add_argument('--amp', type=boolean_string, default=False,
                         help='Automatic Mixed Precision training')
 
@@ -67,12 +57,12 @@ def train(opt):
 
     use_cuda = torch.cuda.is_available()
     device = "cuda" if use_cuda else "cpu"
- 
-    # if torch.cuda.is_available():
-    #     torch.cuda.manual_seed(42)
-    # else:
-    #     torch.manual_seed(42)
 
+    np.random.seed(42)
+    torch.manual_seed(42)
+    if use_cuda:
+        torch.cuda.manual_seed_all(42)
+        
     # ====== Model Initialization ======
     seg_mode = MULTILABEL_MODE if params.seg_multilabel else MULTICLASS_MODE if len(params.seg_list) > 1 else BINARY_MODE
 
@@ -80,8 +70,17 @@ def train(opt):
                                seg_classes=len(params.seg_list), backbone_name=opt.backbone,
                                seg_mode=seg_mode)
     
+    if opt.freeze_seg:
+        model.bifpndecoder.requires_grad_(False)
+        model.segmentation_head.requires_grad_(False)
+        print('[Info] freezed segmentation head')
+
+    if opt.freeze_cla:
+        model.classification_head.requires_grad_(False)
+        print('[Info] freezed classification head')
+
     # wrap the model with loss function, to reduce the memory usage on gpu0 and speedup
-    model = ModelWithLoss(model, debug=opt.debug)
+    model = ModelWithLoss(model)
 
     model = model.to(memory_format=torch.channels_last)
 
@@ -96,9 +95,9 @@ def train(opt):
     else:
         optimizer = torch.optim.SGD(model.parameters(), opt.lr, momentum=0.9, nesterov=True)
 
-    scaler = torch.amp.GradScaler(device=device, enabled=opt.amp)
+    scaler = torch.amp.GradScaler(enabled=opt.amp)
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     training_generator, val_generator = initDataLoader(params, seg_mode=seg_mode)
 
@@ -115,8 +114,7 @@ def train(opt):
             model.load_state_dict(ckpt.get('model', ckpt), strict=False)
         except RuntimeError as e:
             print(f'[Warning] Ignoring {e}')
-            print(
-                '[Warning] Don\'t panic if you see this, this might be because you load a pretrained weights with different number of classes. The rest of the weights should be loaded already.')
+            print('[Warning] this might be because you load a pretrained weights with different number of classes. The rest of the weights should be loaded already.')
     else:
         print('[Info] initializing weights...')
         init_weights(model)
@@ -143,25 +141,23 @@ def train(opt):
 
             for iter, data in enumerate(progress_bar):
                 try:
-                    imgs = data['img']
+                    imgs = data['img'].to(device=device, memory_format=torch.channels_last)
                     total_lane = data['totalLane']
-                    ego_lane = data['egoLane']
-                    seg_annot = data['segmentation']
-
-                    if torch.cuda.device_count() > 0:
-                        imgs = imgs.to(device=device, memory_format=torch.channels_last)
-                        ego_lane = ego_lane.cuda()
-                        seg_annot = seg_annot.cuda()
+                    ego_lane = data['egoLane'].cuda()
+                    seg_annot = data['segmentation'].cuda()
 
                     optimizer.zero_grad(set_to_none=True)
                     with torch.amp.autocast(device_type=device, enabled=opt.amp):
-                        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot,
-                                                                                label_list=params.label_list)
-                        cls_loss = cls_loss.mean()
-                        seg_loss = seg_loss.mean()
-
-                        loss = cls_loss + seg_loss
+                        cls_loss, seg_loss, classification, segmentation = model(imgs, ego_lane, seg_annot, label_list=params.label_list)
                         
+                        cls_loss = cls_loss.mean()
+                        seg_loss = seg_loss.mean() if not opt.freeze_seg else torch.tensor(0, device="cuda")
+
+                        cls_weight = 1
+                        seg_weight = 1
+
+                        loss = cls_weight * cls_loss + seg_weight * seg_loss
+
                     if loss == 0 or not torch.isfinite(loss):
                         continue
 
@@ -178,21 +174,27 @@ def train(opt):
 
                     progress_bar.set_description(
                         'Step: {}. Epoch: {}/{}. Iteration: {}/{}. Cls loss: {:.5f}. Seg loss: {:.5f}. Total loss: {:.5f}'.format(
-                            step, epoch, opt.num_epochs, iter + 1, num_iter_per_epoch, cls_loss.item(),
-                            seg_loss.item(), loss.item()))
-                    writer.add_scalars('Loss', {'train': loss}, step)
-                    writer.add_scalars('Classfication_loss', {'train': cls_loss}, step)
-                    writer.add_scalars('Segmentation_loss', {'train': seg_loss}, step)
-
+                            step, epoch, opt.num_epochs, iter + 1, num_iter_per_epoch, cls_loss.item(), seg_loss.item(), loss.item()))
+                    writer.add_scalars('Loss/Total', {'train': loss}, step)
+                    writer.add_scalars('Loss/Classfication', {'train': cls_loss}, step)
+                    writer.add_scalars('Loss/Segmentation', {'train': seg_loss}, step)
                     # log learning_rate
                     current_lr = optimizer.param_groups[0]['lr']
                     writer.add_scalar('learning_rate', current_lr, step)
-
                     step += 1
 
                     if step % opt.save_interval == 0 and step > 0:
                         save_checkpoint(model, saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}.pth')
-                        print('checkpoint...')
+                        print('Checkpoint saved at step', step)
+                    
+                    if step % 100 == 0:
+                        os.makedirs('predictions', exist_ok=True)
+                        torch.save({
+                            'images': imgs.cpu(),
+                            'predictions': classification.cpu(),
+                            'total' : total_lane.cpu(),
+                            'labels': ego_lane.cpu()
+                        }, f'predictions/pred_step_{step}.pth')
 
                 except Exception as e:
                     print('[Error]', traceback.format_exc())
@@ -205,6 +207,7 @@ def train(opt):
                 best_fitness, best_loss, best_epoch = val(model, val_generator, params, opt, seg_mode, is_training=True,
                                                           optimizer=optimizer, scaler=scaler, writer=writer, epoch=epoch, step=step, 
                                                           best_fitness=best_fitness, best_loss=best_loss, best_epoch=best_epoch)
+                
     except KeyboardInterrupt:
         save_checkpoint(model, saved_path, f'elinets-d{opt.compound_coef}_{epoch}_{step}.pth')
     finally:
@@ -222,14 +225,13 @@ def initDataLoader(params, seg_mode):
                 mean=params.mean, std=params.std
             )
         ]),
-        seg_mode=seg_mode,
-        debug=opt.debug
+        seg_mode=seg_mode
     )
 
     training_generator = DataLoaderX(
         train_dataset,
         batch_size=opt.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=opt.num_workers,
         pin_memory=params.pin_memory,
         collate_fn=BddDataset.collate_fn
@@ -245,14 +247,13 @@ def initDataLoader(params, seg_mode):
                 mean=params.mean, std=params.std
             )
         ]),
-        seg_mode=seg_mode,
-        debug=opt.debug
+        seg_mode=seg_mode
     )
 
     val_generator = DataLoaderX(
         valid_dataset,
         batch_size=opt.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=opt.num_workers,
         pin_memory=params.pin_memory,
         collate_fn=BddDataset.collate_fn

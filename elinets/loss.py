@@ -8,14 +8,34 @@ from typing import Optional, List
 from functools import partial
 from utils.constants import *
 
-
-class FocalLoss(nn.Module):
+class CrossEntropyLoss(nn.Module):
     def __init__(self):
-        super(FocalLoss, self).__init__()
+        super(CrossEntropyLoss, self).__init__()
 
     def forward(self, classifications, annotations, **kwargs):
-        alpha = 0.25
-        gamma = 2.0
+        batch_size = classifications.shape[0]
+        classification_losses = []
+
+        for j in range(batch_size):
+            classification = classifications[j, :]
+            gt_label = annotations[j].long() - 1  # ground truth label (integer encoding)
+
+            # Cross-Entropy Loss
+            cls_loss = F.cross_entropy(classification.unsqueeze(0), gt_label.unsqueeze(0), reduction='none')
+
+            classification_losses.append(cls_loss)
+
+        return torch.stack(classification_losses).mean(dim=0, keepdim=True)
+    
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, classifications, annotations, **kwargs):
+        alpha = self.alpha
+        gamma = self.gamma
         batch_size = classifications.shape[0]
         classification_losses = []
 
@@ -37,8 +57,7 @@ class FocalLoss(nn.Module):
             classification_losses.append(cls_loss)
 
         return torch.stack(classification_losses).mean(dim=0, keepdim=True)
-
-
+    
 def focal_loss_with_logits(
     output: torch.Tensor,
     target: torch.Tensor,

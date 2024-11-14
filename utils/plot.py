@@ -111,9 +111,9 @@ class ConfusionMatrix:
             labels (Array[N]): Ground truth lane numbers (from 0 to num_classes-1).
         """
         gt_class = labels.int()
-        pred_class = preds[:, 1].int()
+        pred_class = preds.int()
 
-        self.matrix[gt_class, pred_class] += 1
+        self.matrix[gt_class-1, pred_class-1] += 1
 
 
     def tp_fp_fn(self):
@@ -146,11 +146,11 @@ class ConfusionMatrix:
             matrix = self.matrix
 
 
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(12, 9), tight_layout=True)
         sns.set(font_scale=1.0 if self.num_classes < 50 else 0.8)
         sns.heatmap(matrix, annot=True, fmt='.2f' if normalize else 'd', cmap='Blues', square=True,
-                    xticklabels=class_names + ['background FP'],
-                    yticklabels=class_names + ['background FP']).set_facecolor((1, 1, 1))
+                    xticklabels=class_names,
+                    yticklabels=class_names).set_facecolor((1, 1, 1))
 
         plt.xlabel('Predicted Lane')
         plt.ylabel('True Lane')

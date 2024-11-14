@@ -2,14 +2,14 @@
 mean: [0.485, 0.456, 0.406]
 std: [0.229, 0.224, 0.225]
 
-label_list: [1,2,3,4,5,6]
+label_list: [1,2,3,4,5]
 
 seg_list: ['road', 'line']
 seg_multilabel: false  # a pixel can belong to multiple labels (i.e. lane line + underlying road)
 
 dataset:
   dataroot: /home/amsl/yewon_ws/src/DLENets/datasets/bdd100k/images/100k/
-  labelroot: /home/amsl/yewon_ws/src/DLENets/riri/
+  labelroot: /home/amsl/yewon_ws/src/DLENets/datasets/
   segroot:
   - /home/amsl/yewon_ws/src/DLENets/datasets/bdd_seg_gt/
   - /home/amsl/yewon_ws/src/DLENets/datasets/bdd_lane_gt/
@@ -18,8 +18,6 @@ dataset:
   org_img_size:
   - 720
   - 1280
-  fliplr: 0.5
-  flipud: 0.0
   hsv_h: 0.015
   hsv_s: 0.7
   hsv_v: 0.4

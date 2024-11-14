@@ -4,7 +4,7 @@ from torchvision.ops.boxes import nms as nms_torch
 import torch.nn.functional as F
 import math
 from functools import partial
-from elinets.loss import FocalLoss, FocalLossSeg, TverskyLoss
+from elinets.loss import CrossEntropyLoss, FocalLossSeg, TverskyLoss
 
 
 def nms(dets, thresh):
@@ -12,25 +12,19 @@ def nms(dets, thresh):
 
 
 class ModelWithLoss(nn.Module):
-    def __init__(self, model, debug=False):
+    def __init__(self, model):
         super().__init__()
         self.model = model
-        self.criterion = FocalLoss()
+        self.criterion = CrossEntropyLoss()
         self.seg_criterion1 = TverskyLoss(mode=self.model.seg_mode, alpha=0.7, beta=0.3, gamma=4.0/3, from_logits=True)
         self.seg_criterion2 = FocalLossSeg(mode=self.model.seg_mode, alpha=0.25)
-        self.debug = debug
 
     def forward(self, imgs, annotations, seg_annot, label_list=None):
         _, classification, segmentation = self.model(imgs)
 
-        if self.debug:
-            cls_loss = self.criterion(classification, annotations, imgs=imgs, obj_list=label_list)
-            tversky_loss = self.seg_criterion1(segmentation, seg_annot)
-            focal_loss = self.seg_criterion2(segmentation, seg_annot)
-        else:
-            cls_loss = self.criterion(classification, annotations)
-            tversky_loss = self.seg_criterion1(segmentation, seg_annot)
-            focal_loss = self.seg_criterion2(segmentation, seg_annot)
+        cls_loss = self.criterion(classification, annotations, imgs=imgs, label_list=label_list)
+        tversky_loss = self.seg_criterion1(segmentation, seg_annot)
+        focal_loss = self.seg_criterion2(segmentation, seg_annot)
 
         seg_loss = tversky_loss + 1 * focal_loss
 

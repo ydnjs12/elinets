@@ -42,7 +42,7 @@ def save_checkpoint(ckpt, saved_path, name):
 
 def fitness(x):
     # Model fitness as a weighted combination of metrics
-    w = [0.0, 0.0, 0.1, 0.9, 0.0, 0.0, 0.0]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95, iou score, f1_score, loss]
+    w = [0.0, 0.0, 0.0, 0.0, 0.0]  # weights for [P, R, iou score, f1_score, loss]
     return (x[:, :] * w).sum(1)
 
 
@@ -133,10 +133,10 @@ def preprocess_video(*frame_from_video, max_size=512, mean=(0.406, 0.456, 0.485)
     return ori_imgs, framed_imgs, framed_metas
 
 
-def postprocess(x, classification, threshold, total_lane):
+def postprocess(x, classification, total_lane):
     out = []
     for i in range(x.shape[0]):
-        condition = torch.tensor([classification[i][classif] for classif in range(total_lane[i])])
+        condition = classification[i, :total_lane[i]]
         scores, class_ids = torch.max(condition, dim=0)
         
         out.append({
@@ -778,8 +778,7 @@ def random_perspective(combination, targets=(), degrees=10, translate=.1, scale=
 
     # print(im.shape)
     combination = (im, seg)
-    return combination, targets
-
+    return combination
 
 def mixup(im, labels, seg_label, im2, labels2, seg_label2):
     # Applies MixUp augmentation https://arxiv.org/pdf/1710.09412.pdf

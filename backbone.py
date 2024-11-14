@@ -62,7 +62,6 @@ class HybridNetsBackbone(nn.Module):
                                                     num_layers=4,
                                                     pyramid_levels=self.pyramid_levels[self.compound_coef],
                                                     onnx_export=onnx_export)
-        
 
         if backbone_name:
             self.encoder = timm.create_model(backbone_name, pretrained=True, features_only=True, out_indices=(2,3,4))  # P3,P4,P5
